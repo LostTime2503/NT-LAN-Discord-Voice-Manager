@@ -1,8 +1,15 @@
 services:
   bot:
-    image: nt-lan-voice-manager:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: nt-lan-voice-manager
     restart: unless-stopped
-    env_file:
-      - .env
-    # No ports are published; the bot only makes outbound connections to Discord's API.
+    environment:
+      DISCORD_TOKEN: ${DISCORD_TOKEN:?Set in Dockhand}
+      DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID:?Set in Dockhand}
+      DISCORD_GUILD_ID: ${DISCORD_GUILD_ID:?Set in Dockhand}
+      JOIN_TO_CREATE_CHANNEL_ID: ${JOIN_TO_CREATE_CHANNEL_ID:-}
+      CS_TEAM_CATEGORY_ID: ${CS_TEAM_CATEGORY_ID:-}
+      CREW_LOG_CHANNEL_ID: ${CREW_LOG_CHANNEL_ID:-}
+      EMPTY_CHANNEL_DELETE_DELAY_MS: ${EMPTY_CHANNEL_DELETE_DELAY_MS:-300000}
