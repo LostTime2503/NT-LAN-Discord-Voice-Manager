@@ -2,6 +2,20 @@
 
 Discord-bot for NT-LAN voice channel management.
 
+## Miljovariabler
+
+| Variabel | Pakrevd | Beskrivelse |
+| --- | --- | --- |
+| `DISCORD_TOKEN` | Ja | Bot-token fra Discord Developer Portal. |
+| `DISCORD_CLIENT_ID` | Ja | Application ID fra Discord Developer Portal. |
+| `DISCORD_GUILD_ID` | Ja | Server-ID til Discord-serveren boten skal registrere slash commands pa. |
+| `JOIN_TO_CREATE_CHANNEL_ID` | Nei | Kanal-ID for "Lag ny kanal her", satt av `/setup-voice-manager`. |
+| `CS_TEAM_CATEGORY_ID` | Nei | Kategori-ID for CS-lagkanaler, satt av `/setup-voice-manager`. |
+| `CREW_LOG_CHANNEL_ID` | Nei | Tekstkanal-ID boten sender online/offline-meldinger til, f.eks. `#bot-log`. |
+| `EMPTY_CHANNEL_DELETE_DELAY_MS` | Nei (standard `300000`) | Millisekunder en tom midlertidig voice-kanal star ubrukt for boten sletter den. |
+
+Ingen av disse skal ligge i kildekoden, `Dockerfile` eller Git. De settes lokalt i `.env`, eller som miljovariabler pa serveren/i Dockhand.
+
 ## Forste milepael
 
 - Leser hemmeligheter fra lokal `.env`.

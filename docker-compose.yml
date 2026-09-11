@@ -1,0 +1,8 @@
+services:
+  bot:
+    image: nt-lan-voice-manager:latest
+    container_name: nt-lan-voice-manager
+    restart: unless-stopped
+    env_file:
+      - .env
+    # No ports are published; the bot only makes outbound connections to Discord's API.
