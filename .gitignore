@@ -1,4 +1,7 @@
 node_modules/
 dist/
 .env
+data/meal-times.json
+data/meal-reminders.json
+data/meal-notifications.json
 npm-debug.log*

@@ -12,7 +12,14 @@ Discord-bot for NT-LAN voice channel management.
 | `JOIN_TO_CREATE_CHANNEL_ID` | Nei | Kanal-ID for "Lag ny kanal her", satt av `/setup-voice-manager`. |
 | `CS_TEAM_CATEGORY_ID` | Nei | Kategori-ID for CS-lagkanaler, satt av `/setup-voice-manager`. |
 | `CREW_LOG_CHANNEL_ID` | Nei | Tekstkanal-ID boten sender online/offline-meldinger til, f.eks. `#bot-log`. |
+| `CREW_ROLE_ID` | For crew-begrensede kommandoer | Generell rolle-ID for Crew. Denne rollen og roller over den kan bruke crew-kommandoer. |
+| `WELCOME_CHANNEL_ID` | Nei | Tekstkanal-ID boten sender velkomstmelding med "sett kallenavn"-knapp til nye medlemmer. |
+| `MODAL_CHANNEL_ID` | Nei | Tekstkanal-ID for knappen der medlemmer registrerer kallenavn og puljer. |
+| `ANNOUNCEMENT_CHANNEL_ID` | Nei | Tekstkanal-ID for matvarsler. Konfigurer kanalrettighetene i Discord slik at bare boten og arrangørene kan skrive. |
+| `ENABLE_TEAM_SYNC` | Nei (standard `false`) | Slår på konkurransesynken bare når verdien er `true`. |
 | `EMPTY_CHANNEL_DELETE_DELAY_MS` | Nei (standard `300000`) | Millisekunder en tom midlertidig voice-kanal star ubrukt for boten sletter den. |
+| `MAT_URL` | Nei | Base-URL for konkurranse-API-et. Brukes bare når `ENABLE_TEAM_SYNC=true`. |
+| `MAT_API_TOKEN` | Nei | API-token for konkurransesynken. Brukes bare når `ENABLE_TEAM_SYNC=true`. |
 
 Ingen av disse skal ligge i kildekoden, `Dockerfile` eller Git. De settes lokalt i `.env`, eller som miljovariabler pa serveren/i Dockhand.
 
@@ -137,6 +144,23 @@ Hvis du setter `CREW_LOG_CHANNEL_ID` i `.env` til en tekstkanal-ID, f.eks. `#bot
 - en melding nar den stoppes kontrollert med `Ctrl+C` eller `docker stop`
 
 Dette dekker planlagt stopp, ikke krasj eller strombrudd. Automatisk varsling ved krasj krever et overvakingsoppsett rundt Docker/Dockhand, som vi setter opp i Docker-milepaelen.
+
+## Kallenavn, puljeregistrering og varsler
+
+Sett disse kanal-ID-ene i `.env`:
+
+```env
+MODAL_CHANNEL_ID=ID_FOR_REGISTRERINGSKANAL
+ANNOUNCEMENT_CHANNEL_ID=ID_FOR_VARSELSKANAL
+```
+
+Publiser registreringsknappen med `/setup-kallenavn-og-puljer`. Medlemmets skjema er privat. Medlemmet velger `Matpulje 1`, `Matpulje 2`, eller at de ikke skal ha mat. Gjeldende serveringstider vises i skjemaet. Boten setter kallenavnet og gir rollen for valgt matpulje, eller rollen `Ingen mat`; dette gjør at `/matstatus` kan telle dem som ikke skal spise. Ved ny registrering byttes rollen, og gamle puljeroller som var delt per runde fjernes. Boten trenger rettighetene `Manage Nicknames` og `Manage Roles`, og botrollen må ligge over registreringsrollene.
+
+Endre serveringstiden med `/sett-puljetid pulje: tid:`. Velg pulje 1 eller 2 og skriv tiden i 24-timersformat, for eksempel `17:30`. Tidene lagres lokalt og i Docker-volumet `meal-settings`, og brukes i modal, matstatus og varsler. Dette endrer klokkeslettet som vises; det planlegger ikke et nytt varsel automatisk.
+
+Planlegg begge puljene samlet med `/planlegg-mat`. Modalet lar crew velge dato, serveringstid for hver pulje og uavhengig avkrysse varsler ved start, 30 minutter før og 10 minutter før. Datoen forhåndsutfylles med sist planlagte dato så lenge den ikke har passert, ellers dagens dato i tidssonen `Europe/Oslo`; tidene og sist valgte varselbokser forhåndsutfylles. Innsendingen oppdaterer også de lagrede standardtidene, datoen og varselvalgene. Planene og valgene lagres i samme Docker-volum og overlever omstart. Hvis datoen allerede har en plan, må Crew bekrefte før begge puljene erstattes. `/vis-matplan` viser kommende varsler, og `/avlys-matplan` avlyser én pulje eller begge for en dato. Varsler som er mer enn fem minutter forsinket, hoppes over. Registrerte uten mat vises separat i `/matstatus` og får ingen varsler.
+
+Sett `CREW_ROLE_ID` til Crew-rollens ID i `.env`. `/varsle-pulje1`, `/varsle-pulje2` og `/matstatus` er tilgjengelige for medlemmer med Crew-rollen, roller over den, eller `Manage Server`. Denne generelle Crew-innstillingen kan også brukes av andre crew-begrensede botkommandoer. Varslekommandoene sender en fast melding til riktig matpulje i `ANNOUNCEMENT_CHANNEL_ID`; bare den aktuelle puljerollen blir nevnt. `/matstatus` viser antall registrerte per pulje, uten navn. Boten trenger `View Channel` og `Send Messages` i varselkanalen. Den trenger også `Mention @everyone, @here, and All Roles` for å nevne puljerollene.
 
 For rask lokal test kan du sette dette lavere i `.env`, for eksempel:
 

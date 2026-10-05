@@ -33,5 +33,13 @@ export const config = {
   joinToCreateChannelId: process.env.JOIN_TO_CREATE_CHANNEL_ID,
   csTeamCategoryId: process.env.CS_TEAM_CATEGORY_ID,
   crewLogChannelId: process.env.CREW_LOG_CHANNEL_ID,
-  emptyChannelDeleteDelayMs: readOptionalPositiveInteger("EMPTY_CHANNEL_DELETE_DELAY_MS", 300_000)
+  crewRoleId: process.env.CREW_ROLE_ID,
+  welcomeChannelId: process.env.WELCOME_CHANNEL_ID,
+  modalChannelId: process.env.MODAL_CHANNEL_ID,
+  announcementChannelId: process.env.ANNOUNCEMENT_CHANNEL_ID,
+  emptyChannelDeleteDelayMs: readOptionalPositiveInteger("EMPTY_CHANNEL_DELETE_DELAY_MS", 300_000),
+  teamSyncEnabled: process.env.ENABLE_TEAM_SYNC === "true",
+  matUrl: process.env.MAT_URL,
+  matApiToken: process.env.MAT_API_TOKEN,
+  teamSyncIntervalMs: readOptionalPositiveInteger("TEAM_SYNC_INTERVAL_MS", 60_000)
 };
