@@ -1,4 +1,5 @@
 import { MessageFlags, SlashCommandBuilder, type ChatInputCommandInteraction } from "discord.js";
+import { renameTemporaryChannel } from "../voiceManager.js";
 
 export const voiceNameCommand = {
   data: new SlashCommandBuilder()
@@ -30,7 +31,6 @@ export const voiceNameCommand = {
     const requestedName = interaction.options.getString("navn", true);
 
     try {
-      const { renameTemporaryChannel } = await import("../voiceManager.js");
       const newName = await renameTemporaryChannel(channel, interaction.user.id, requestedName);
       await interaction.reply({ content: `Kanalnavnet er endret til ${newName}.`, flags: MessageFlags.Ephemeral });
     } catch (error) {

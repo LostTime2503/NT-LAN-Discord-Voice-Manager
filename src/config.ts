@@ -26,13 +26,6 @@ function readOptionalPositiveInteger(name: string, fallback: number): number {
   return value;
 }
 
-function readOptionalBoolean(name: string, fallback: boolean): boolean {
-  const value = process.env[name];
-  if (!value) return fallback;
-  if (value !== "true" && value !== "false") throw new Error(`${name} must be true or false.`);
-  return value === "true";
-}
-
 export const config = {
   token: readRequiredEnv("DISCORD_TOKEN"),
   clientId: readRequiredEnv("DISCORD_CLIENT_ID"),
@@ -40,15 +33,5 @@ export const config = {
   joinToCreateChannelId: process.env.JOIN_TO_CREATE_CHANNEL_ID,
   csTeamCategoryId: process.env.CS_TEAM_CATEGORY_ID,
   crewLogChannelId: process.env.CREW_LOG_CHANNEL_ID,
-  emptyChannelDeleteDelayMs: readOptionalPositiveInteger("EMPTY_CHANNEL_DELETE_DELAY_MS", 300_000),
-  accessChannelId: process.env.ACCESS_CHANNEL_ID,
-  accessRoleId: process.env.ACCESS_ROLE_ID,
-  crewRoleId: process.env.CREW_ROLE_ID,
-  accessDryRun: readOptionalBoolean("ACCESS_DRY_RUN", true),
-  accessSyncIntervalMs: readOptionalPositiveInteger("ACCESS_SYNC_INTERVAL_MS", 60_000),
-  registrationUrl: process.env.REGISTRATION_URL,
-  registrationApiUrl: process.env.REGISTRATION_API_URL,
-  registrationTokenUrl: process.env.REGISTRATION_TOKEN_URL,
-  registrationClientId: process.env.REGISTRATION_CLIENT_ID,
-  registrationClientSecret: process.env.REGISTRATION_CLIENT_SECRET
+  emptyChannelDeleteDelayMs: readOptionalPositiveInteger("EMPTY_CHANNEL_DELETE_DELAY_MS", 300_000)
 };

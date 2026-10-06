@@ -8,8 +8,7 @@
     "dev": "tsx src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
-    "deploy:commands": "tsx src/deploy-commands.ts",
-    "test": "tsx --test tests/*.test.ts"
+    "deploy:commands": "tsx src/deploy-commands.ts"
   },
   "dependencies": {
     "discord.js": "^14.16.3",

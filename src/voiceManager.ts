@@ -9,41 +9,10 @@ import {
   type VoiceState
 } from "discord.js";
 import { config } from "./config.js";
-import { accessInitializationError, accessManager } from "./accessRuntime.js";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 
 const temporaryChannelIds = new Set<string>();
 const temporaryChannelOwners = new Map<string, string>();
 const deleteTimers = new Map<string, NodeJS.Timeout>();
-const ownersPath = join(process.cwd(), "data", "voice-owners.json");
-let ownerSave: Promise<void> = Promise.resolve();
-
-async function loadVoiceOwners(): Promise<void> {
-  if (!accessManager || accessManager.settings.dryRun) return;
-  try {
-    const owners: unknown = JSON.parse(await readFile(ownersPath, "utf8"));
-    if (!Array.isArray(owners) || owners.some((entry) => !Array.isArray(entry) || entry.length !== 2
-      || entry.some((id) => typeof id !== "string" || !/^\d{17,20}$/.test(id)))) {
-      throw new Error("Invalid voice owner data.");
-    }
-    for (const [channelId, ownerId] of owners as [string, string][]) temporaryChannelOwners.set(channelId, ownerId);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
-}
-
-async function saveVoiceOwners(): Promise<void> {
-  if (!accessManager || accessManager.settings.dryRun) return;
-  const snapshot = JSON.stringify([...temporaryChannelOwners]);
-  const task = ownerSave.catch(() => undefined).then(async () => {
-    await mkdir(join(process.cwd(), "data"), { recursive: true });
-    await writeFile(`${ownersPath}.tmp`, snapshot, { mode: 0o600 });
-    await rename(`${ownersPath}.tmp`, ownersPath);
-  });
-  ownerSave = task;
-  await task;
-}
 
 export async function handleVoiceStateUpdate(oldState: VoiceState, newState: VoiceState): Promise<void> {
   await handleJoinToCreate(newState);
@@ -72,8 +41,6 @@ export async function cleanupEmptyVoiceChannelsOnStartup(client: Client): Promis
     return;
   }
 
-  await loadVoiceOwners();
-
   const joinToCreateChannel = await client.channels.fetch(config.joinToCreateChannelId);
 
   if (!joinToCreateChannel || joinToCreateChannel.type !== ChannelType.GuildVoice || !joinToCreateChannel.parent) {
@@ -91,9 +58,6 @@ export async function cleanupEmptyVoiceChannelsOnStartup(client: Client): Promis
 
   for (const channel of voiceChannels.values()) {
     temporaryChannelIds.add(channel.id);
-    const previousOwner = channel.permissionOverwrites.cache.find((overwrite) => overwrite.type === 1
-      && overwrite.allow.has(PermissionFlagsBits.ManageChannels));
-    if (previousOwner && !temporaryChannelOwners.has(channel.id)) temporaryChannelOwners.set(channel.id, previousOwner.id);
 
     if (channel.members.size === 0) {
       await deleteTemporaryChannel(channel);
@@ -104,8 +68,6 @@ export async function cleanupEmptyVoiceChannelsOnStartup(client: Client): Promis
     adoptedCount += 1;
   }
 
-  await saveVoiceOwners();
-
   console.log(`Startup cleanup deleted ${deletedCount} empty voice channel(s) and adopted ${adoptedCount} active channel(s).`);
 
   // Bruker kan ha blitt sittende fast i join-to-create kanalen mens boten var nede.
@@ -114,7 +76,6 @@ export async function cleanupEmptyVoiceChannelsOnStartup(client: Client): Promis
 
   for (const member of strandedMembers) {
     try {
-      if (accessManager && !accessManager.canUseVoice(member)) continue;
       await createTemporaryChannelForMember(member, joinToCreateChannel.parent);
       movedCount += 1;
     } catch (error) {
@@ -137,35 +98,24 @@ async function handleJoinToCreate(newState: VoiceState): Promise<void> {
 }
 
 async function createTemporaryChannelForMember(member: GuildMember, parent: CategoryChannel | null): Promise<void> {
-  if (accessInitializationError) throw new Error("Access sync is unavailable; fix configuration before creating new voice channels.");
-  if (accessManager && !accessManager.canUseVoice(member)) return;
-  if (accessManager && !accessManager.settings.dryRun
-    && !accessManager.isVoiceCategoryProtected(parent)) {
-    throw new Error("In Discord, deny View Channel for @everyone and allow it for the access role on the join-to-create category.");
-  }
   const channel = await member.guild.channels.create({
     name: `${member.displayName} sin kanal`,
     type: ChannelType.GuildVoice,
     parent,
     // Bruker serverens gjeldende maks bitrate, som stiger automatisk med boost-niva.
     bitrate: member.guild.maximumBitrate,
+    // Gir eieren lov til a endre kanalnavn direkte i Discord. Overlever bot-restart siden Discord lagrer dette, ikke boten.
     permissionOverwrites: [
-      ...(parent ? [...parent.permissionOverwrites.cache.values()].map((overwrite) => ({
-        id: overwrite.id, type: overwrite.type, allow: overwrite.allow.bitfield, deny: overwrite.deny.bitfield
-      })) : []),
-      ...(!accessManager || accessManager.settings.dryRun ? [
-        {
-          id: member.id,
-          allow: [PermissionFlagsBits.ManageChannels]
-        }
-      ] : [])
+      {
+        id: member.id,
+        allow: [PermissionFlagsBits.ManageChannels]
+      }
     ],
     reason: "Join-to-create temporary voice channel"
   });
 
   temporaryChannelIds.add(channel.id);
   temporaryChannelOwners.set(channel.id, member.id);
-  await saveVoiceOwners();
   await sortTemporaryChannels(channel);
   await member.voice.setChannel(channel);
 }
@@ -177,12 +127,8 @@ export async function renameTemporaryChannel(channel: VoiceBasedChannel, userId:
 
   const ownerId = temporaryChannelOwners.get(channel.id);
 
-  const persistedOwnerId = channel.permissionOverwrites.cache.find((overwrite) => overwrite.type === 1 && overwrite.allow.has(PermissionFlagsBits.ManageChannels))?.id;
-  if ((ownerId ?? persistedOwnerId) && (ownerId ?? persistedOwnerId) !== userId) {
+  if (ownerId && ownerId !== userId) {
     throw new Error("Bare personen som laget kanalen kan endre navnet.");
-  }
-  if (accessManager && !accessManager.settings.dryRun && !ownerId && !persistedOwnerId) {
-    throw new Error("Kanaleieren er ikke kjent etter omstart. Kontakt Crew for navneendring.");
   }
 
   const sanitizedName = sanitizeChannelName(newName);
@@ -228,7 +174,6 @@ async function deleteTemporaryChannel(channel: VoiceBasedChannel): Promise<void>
 
   temporaryChannelIds.delete(channel.id);
   temporaryChannelOwners.delete(channel.id);
-  await saveVoiceOwners();
   await channel.delete("Temporary voice channel is empty.");
 }
 

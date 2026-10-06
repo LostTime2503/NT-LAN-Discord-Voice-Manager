@@ -1,8 +1,4 @@
 node_modules/
 dist/
 .env
-data/access-permissions-backup.json
-data/access-permissions-backup.json.tmp
-data/voice-owners.json
-data/voice-owners.json.tmp
 npm-debug.log*
