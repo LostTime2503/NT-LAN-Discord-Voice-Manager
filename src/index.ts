@@ -2,10 +2,12 @@ import { Client, Events, GatewayIntentBits, MessageFlags } from "discord.js";
 import { findCommand } from "./commands/index.js";
 import { config } from "./config.js";
 import { sendCrewLogMessage } from "./crewLog.js";
+import { ACCESS_BUTTON_ID, startAccessSync } from "./accessManager.js";
+import { accessInitializationError, accessManager } from "./accessRuntime.js";
 import { cleanupEmptyVoiceChannelsOnStartup, handleVoiceStateUpdate, logVoiceManagerStatus } from "./voiceManager.js";
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates]
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates, ...(accessManager ? [GatewayIntentBits.GuildMembers] : [])]
 });
 
 // Gir en tydelig logglinje for Dockhand/Docker for prosessen dor, i stedet for a henge i ukjent tilstand.
@@ -19,9 +21,15 @@ process.on("unhandledRejection", (error) => {
   process.exit(1);
 });
 
-client.once(Events.ClientReady, (readyClient) => {
+client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}.`);
   logVoiceManagerStatus(readyClient);
+  if (accessInitializationError) {
+    console.error(`Access sync paused: ${accessInitializationError} Existing voice channels remain unchanged; new channel creation is blocked until configuration is fixed.`);
+  }
+  if (accessManager) {
+    await startAccessSync(accessManager, readyClient);
+  }
   void cleanupEmptyVoiceChannelsOnStartup(readyClient).catch((error) => {
     console.error("Failed to clean up empty voice channels on startup", error);
   });
@@ -43,12 +51,21 @@ async function shutdown(): Promise<void> {
   }
 
   isShuttingDown = true;
+  accessManager?.stop();
   await sendCrewLogMessage(client, "NT-LAN Voice Manager gar offline (planlagt stopp).");
   client.destroy();
   process.exit(0);
 }
 
 client.on(Events.InteractionCreate, async (interaction) => {
+  if (interaction.isButton() && interaction.customId === ACCESS_BUTTON_ID) {
+    if (accessManager) {
+      await accessManager.handleButton(interaction).catch(() => console.error("Access button response failed."));
+    } else {
+      await interaction.reply({ content: "Tilgangskontrollen er ikke aktivert.", flags: MessageFlags.Ephemeral });
+    }
+    return;
+  }
   if (!interaction.isChatInputCommand()) {
     return;
   }
@@ -79,6 +96,11 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
   void handleVoiceStateUpdate(oldState, newState).catch((error) => {
     console.error("Failed to handle voice state update", error);
   });
+});
+
+client.on(Events.GuildMemberAdd, (member) => {
+  if (!accessManager || member.guild.id !== config.guildId || member.user.bot) return;
+  void accessManager.check(member).catch(() => console.error("Access check failed for a joining member."));
 });
 
 await client.login(config.token);
