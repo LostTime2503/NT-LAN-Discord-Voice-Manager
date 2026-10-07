@@ -19,7 +19,7 @@ export const setupAccessCommand = {
     }
     const member = await interaction.guild.members.fetch(interaction.user.id);
     if (!isCrewMember(member, accessManager.settings.crewRoleId)) {
-      await interaction.editReply("Bare Crew og hoyere kan bruke denne kommandoen.");
+      await interaction.editReply("Bare Crew og høyere kan bruke denne kommandoen.");
       return;
     }
     const restore = interaction.options.getBoolean("gjenopprett") ?? false;
@@ -35,9 +35,9 @@ export const setupAccessCommand = {
         await accessManager.publishEntry(interaction.guild);
       }
       await interaction.editReply(accessManager.settings.dryRun
-        ? "Torrkjoring fullfort. Ingen meldinger eller kanalrettigheter endret."
+        ? "Tørrkjøring fullført. Ingen meldinger eller kanalrettigheter ble endret."
         : restore ? `Rettigheter gjenopprettet for ${count} kanaler. Navn og roller er ikke tilbakestilt.`
-          : "Inngangsmeldingen er publisert. Kanalrettighetene administreres manuelt i Discord og er ikke endret.");
+          : `Inngangsmeldingen er publisert med nettsidelenken ${accessManager.settings.websiteUrl}. Kanalrettighetene administreres manuelt i Discord og er ikke endret.`);
     } catch (error) {
       console.error("Access setup failed; check configuration and access-channel permissions.");
       await interaction.editReply(error instanceof Error ? error.message : "Oppsettet feilet.");

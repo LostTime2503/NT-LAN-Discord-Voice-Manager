@@ -32,12 +32,17 @@ export function parseParticipants(payload: unknown): Map<string, RegisteredPerso
 export function createNickname(person: RegisteredPerson): string | null {
   const name = person.name.normalize("NFC").trim().replace(/\s+/g, " ");
   if (!name || /[\p{Cc}\p{Cf}]/u.test(name)) return null;
-  if (name.length <= 32) return name;
   const firstName = person.firstName.normalize("NFC").trim().replace(/\s+/g, " ");
-  if (!firstName || !name.startsWith(`${firstName} `)) return null;
-  const lastName = name.split(" ").at(-1)!;
-  const shortened = `${firstName} ${lastName}`;
-  return shortened.length <= 32 ? shortened : null;
+  if (!firstName || /[\p{Cc}\p{Cf}]/u.test(firstName)) return null;
+  const nameParts = name.split(" ");
+  const firstNameParts = firstName.split(" ");
+  if (firstNameParts.some((part, index) => nameParts[index] !== part)) return null;
+  const lastName = nameParts.at(-1);
+  const lastNameInitial = lastName && nameParts.length > firstNameParts.length
+    ? `${Array.from(lastName)[0]?.toLocaleUpperCase("nb-NO") ?? ""}.`
+    : "";
+  const nickname = [firstName, lastNameInitial].filter(Boolean).join(" ");
+  return nickname && [...nickname].length <= 32 ? nickname : null;
 }
 
 export class RegistrationClient {

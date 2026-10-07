@@ -103,4 +103,11 @@ client.on(Events.GuildMemberAdd, (member) => {
   void accessManager.check(member).catch(() => console.error("Access check failed for a joining member."));
 });
 
+client.on(Events.GuildMemberUpdate, (oldMember, newMember) => {
+  if (!accessManager || newMember.guild.id !== config.guildId) return;
+  void accessManager.handleNicknameUpdate(oldMember, newMember).catch(() => {
+    console.error("Failed to restore a linked member's managed nickname.");
+  });
+});
+
 await client.login(config.token);

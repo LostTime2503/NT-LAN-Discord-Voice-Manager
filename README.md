@@ -146,7 +146,7 @@ EMPTY_CHANNEL_DELETE_DELAY_MS=10000
 
 ## Nettsidekobling, kallenavn og tilgang
 
-Tilgang er basert pa Discord-koblingen og fullt navn, ikke pa deltakelse i et bestemt LAN. API-et ma inkludere ogsa brukere som ikke er pameldt arets arrangement. Dette er fortsatt en kontrakt som ma bekreftes med nettsideansvarlig; boten kan ikke oppdage kontoer endepunktet utelater.
+Tilgang er basert pa verifisert Discord-kobling, ikke pa deltakelse i et bestemt LAN. API-et ma inkludere alle koblede brukere, ogsa de som ikke er pameldt arets arrangement. Discord-ID er API-nokkel og behandles som tekst. Discord-kallenavnet settes til fornavn og initial for siste etternavn, for eksempel `Ola N.`.
 
 API-formatet er `{ "data": { "participants": { "DISCORD_ID": { "name": "Fullt navn", "firstName": "Fornavn" } } } }`. Noklene behandles som tekst; `discordUsername`, `crew`, `admin`, `days`, `meals` og `children` brukes ikke til autorisasjon. Nettsiden ma ha verifisert Discord-ID-en gjennom Discord-innlogging. API-klienten bruker client credentials med `scope=openid`, fornyer token automatisk og prover en gang til ved 401. API-kall har tidsgrense og samtidige kall samles.
 
@@ -163,7 +163,7 @@ API-formatet er `{ "data": { "participants": { "DISCORD_ID": { "name": "Fullt na
 | `REGISTRATION_CLIENT_ID` | Klient-ID, normalt `discord-bot`. |
 | `REGISTRATION_CLIENT_SECRET` | Hemmelig klientnokkel. Aldri i Git eller logger. |
 | `ACCESS_DRY_RUN` | Standard `true`: ingen navne-, rolle-, meldings- eller rettighetsendringer fra tilgangskontrollen. Eksisterende voice-funksjoner fortsetter som normalt. |
-| `ACCESS_SYNC_INTERVAL_MS` | Standard `60000`: intervall for automatisk kontroll av eksisterende medlemmer. |
+| `ACCESS_SYNC_INTERVAL_MS` | Standard `15000`: intervall for automatisk kontroll av tilgang og kallenavn. Sett høyere hvis API-et har strenge rategrenser. |
 
 Alle fire API-/token-/klientinnstillinger ma fylles ut sammen. Nar de er tomme, er tilgangskontrollen av. Nar API-et er konfigurert, kreves kanal, roller og nettsidelenke. MAT-variablene i eksempelfilen er reservert; det er ingen MAT- eller matfunksjon i denne implementasjonen.
 
@@ -178,23 +178,37 @@ Alle fire API-/token-/klientinnstillinger ma fylles ut sammen. Nar de er tomme, 
 7. Nar testresultatene er riktige, sett `ACCESS_DRY_RUN=false` og start boten pa nytt. Navn og tilgangsroller synkroniseres da automatisk. Kjor `/setup-access` for a publisere/oppdatere inngangsmeldingen uten a endre kanalrettighetene.
 8. Test med et vanlig medlem uten crew/admin: inngangskanalen synlig for uverifiserte, navn satt for rolle tildeles, beskyttede kanaler synlige etterpa og inngangskanalen skjult. Test ogsa API-feil, omstart, voice og en Discord-koblet bruker uten arets pamelding.
 
-Inngangsmeldingen har nettsidelenke og **Sjekk tilgang**-knapp. Knappen gir et privat svar. Crew beholder tilgang uten kobling/navn; deres navn oppdateres bare hvis API-et har dem og boten kan endre medlemmet. Hoyere roller og servereier ma sette navn selv. Navn over 32 tegn forkortes til API-ets fornavn og siste navneledd; dersom det fortsatt ikke passer eller navnet er ugyldig, ma Crew hjelpe. Sammensatte etternavn kan kreve manuell kontroll. Boten vedlikeholder navn gjennom polling; ta bort `Change Nickname` fra vanlige medlemsroller dersom egen navneendring skal forbys, men behold den for Crew.
+Inngangsmeldingen har nettsidelenke og **Sjekk tilgang**-knapp. Knappen gir et privat svar. Discord-kallenavnet settes til fornavn og initial for siste etternavn, for eksempel `Ola N.`; sammensatt fornavn beholdes slik API-et oppgir det. Boten retter koblede medlemmers manuelle kallenavnsendringer umiddelbart via Discords medlemsoppdatering, med periodisk synk som reserve. For å unngå at Discord viser navnet som en kortvarig endring før boten retter det, fjern `Change Nickname` fra `@everyone` og alle vanlige medlemsroller. Behold nødvendige navne-/administratorrettigheter for Crew. Discords rollepermissions er kumulative, så kontroller alle roller medlemmet har. Hvis navnet mangler, ikke matcher fornavnet, inneholder ugyldige tegn eller overskrider Discords 32-tegnsgrense etter forkorting, må Crew hjelpe. Crew beholder tilgang uten kobling/navn; deres navn oppdateres bare hvis API-et har dem og boten kan endre medlemmet. Høyere roller og servereier må sette navn selv.
 
-### Kanalrettigheter og tilbakeforing
+### Kanalrettigheter
 
-Discord er kilden til rollens rettigheter. Vanlige medlemsrettigheter begrenser ikke oppstart eller rolletildeling. Administrator, rolle-/kanaladministrasjon og modereringsrettigheter pa tilgangsrollen gir en advarsel i loggen, ikke et oppstartsstopp; ingen rettigheter fjernes automatisk. Administrator omgar kanalbeskyttelsen, sa gjennomga slike advarsler selv. Gjentatte kontroller av samme uendrede rettigheter gir ikke gjentatte advarsler.
+Rettigheter settes én gang per kategori, ikke per kanal. I hver kategori synkroniser kanalene med kategorien; en usynkronisert kanal kan overstyre kategoriens regler. Kanaler uten kategori må konfigureres separat. `discord-koblet` kan ha vanlige medlemsrettigheter globalt, men kategori-overstyringer bestemmer unntakene.
 
-Manglende roller, utilstrekkelige botrettigheter eller feil rolleplassering setter tilgangssynken pa pause med en konkret melding, ikke hele boten. Rett opp problemet og start boten pa nytt for a gjenoppta den periodiske synken. Knappen og nye medlemskontroller validerer oppsettet for nye API-/Discord-endringer. API-nedetid gir fortsatt automatisk nytt forsok pa neste intervall. Eksisterende voice-kanaler og medlemstilgang beholdes; nye voice-kanaler krever fremdeles crew-unntak/tilgangsrolle og beskyttet kategori. Ved ufullstendige miljovariabler som hindrer opprettelse av tilgangstjenesten, blokkeres all ny voice-opprettelse til konfigurasjonen er rettet.
+| Kategori / område | `@everyone` | `discord-koblet` | Andre roller |
+| --- | --- | --- | --- |
+| `Start her` med `#få-tilgang` | Tillat **Vis kanal** og **Les meldingshistorikk**; nekt **Send meldinger** hvis kanalen skal være skrivebeskyttet | Nekt **Vis kanal** | Crew og bot tillates ved behov |
+| Vanlige medlemskategorier: info, chat og voice | Nekt **Vis kanal** | Tillat **Vis kanal** | Crew/ledelse og bot tillates |
+| Kategorien med `Lag ny kanal her` | Eksplisitt nekt **Vis kanal** | Eksplisitt tillat **Vis kanal** | Crew og bot tillates |
+| Privat Crew-kategori | Nekt **Vis kanal** | Nekt **Vis kanal** | Crew og godkjent ledelse tillates; bot tillates |
+| `CS-konkurranse` | Nekt **Vis kanal** | Nekt hvis alle verifiserte ikke skal inn | `CS-deltaker`, Crew og bot tillates |
 
-Kanalrettigheter settes manuelt i Discord. Pa medlemskategoriene nekter du `@everyone` **View Channel** og tillater tilgangsrollen, botrollen, Crew og relevante lederroller. Synkroniser underkanalene med kategorien og kontroller andre rolle-/personunntak. Private crew-kategorier skal ikke apnes for tilgangsrollen. Pa inngangskanalen tillater du `@everyone` **View Channel** og nekter tilgangsrollen; boten trenger **View Channel**, **Send Messages** og **Read Message History**. Nekt meldinger for vanlige medlemmer. Kanaler uten kategori ma ogsa konfigureres separat. Administrator omgar skjulingen.
+**Voice-sjekken:** Koden kontrollerer foreldrekategorien til kanalen med `JOIN_TO_CREATE_CHANNEL_ID`. Der må både `@everyone`-nektelsen og `discord-koblet`-tillatelsen være eksplisitte på kategorien; globale rolletillatelser eller overstyringer på selve voice-kanalen er ikke nok. Nye midlertidige kanaler kopierer kategoriens regler. Botrollen må i tillegg ha kanaltilgang og `Manage Channels` der den oppretter/flytter voice-kanaler.
 
-Join-to-create bruker sin faktiske foreldrekategori: boten kontrollerer at `@everyone` nektes **View Channel** og at tilgangsrollen tillates **View Channel**, og kopierer kategoriens overwrites til nye voice-kanaler. Ingen kategori-ID-liste kreves. Du ma selv kontrollere andre unntak og Crew-/bottilgang. Boten endrer ikke dine manuelle rettigheter ved oppstart eller ved vanlig `/setup-access`.
+**Foreslått global standard:** `@everyone` får ikke **Vis kanaler** i rolleinnstillingene, mens `discord-koblet` får det. Kategoriene `Start her`, `Crew` og `CS-konkurranse` overstyrer dette som vist i tabellen. Discord kombinerer overstyringer fra andre roller og personunntak; kontroller dem hvis noen ser en kanal de ikke skal se. Serveradministratorer omgår skjulte kanaler.
 
-Hvis en eldre versjon allerede opprettet `data/access-permissions-backup.json`, kan `/setup-access gjenopprett:true bekreft:true` eksplisitt gjenopprette disse gamle rettighetene. Ikke bruk dette ved vanlig manuelt oppsett: det kan overskrive senere manuelle endringer. Det opprettes ingen nye rettighetskopier. Gjenoppretting er bare en kontroll i torrkjoring; navn og tilgangsroller tilbakestilles ikke. Ta vare pa eventuell gammel sikkerhetskopi og Docker-volumet. Hvis en sikkerhetskopiert kanal er slettet, kreves manuell gjennomgang. Botlagde voice-kanaler etter sikkerhetskopien ma eventuelt ryddes separat.
+Crew har tilgang uten API-kobling. Hvis boten skal oppdatere Crew-kallenavn, må botrollen ligge over Crew og ha `Manage Nicknames`; boten har ikke automatisk Administrator. Tilgangsrollen må ligge under botrollen for at boten skal kunne tildele/fjerne den.
 
-Et vellykket og formatvalidert API-svar brukes som gjeldende koblingsliste. Hvis en vanlig brukers Discord-ID mangler, fjernes tilgangsrollen ved neste kontroll; loggen teller dette som `revoked`. Brukere uten rollen blir `not-linked`. Crew, roller over Crew, administratorer og servereier unntas alltid, og deres roller fjernes ikke ved frakobling. Kallenavn tilbakestilles ikke. Med `ACCESS_DRY_RUN=true` fjernes ingen roller.
+`/setup-access` endrer ikke kanalrettigheter. Den publiserer eller oppdaterer botens melding i `ACCESS_CHANNEL_ID`. Den søker blant de siste 100 meldingene etter botens melding med tilgangsknappen; hvis den ikke finner den, sender den en ny.
 
-API-nedetid, HTTP-feil, tidsavbrudd og ugyldig svarformat fjerner aldri eksisterende tilgangsroller. En vellykket tom liste er derimot gyldig og kan fjerne tilgang fra alle vanlige medlemmer. API-et ma derfor returnere en komplett liste over alle Discord-koblede brukere, ogsa personer uten arets LAN-pamelding; et filtrert eller ufullstendig svar kan ellers gi feilaktig fjerning. Boten kan ikke skille slik utelatelse fra frakobling. Ny kobling gir tilgang igjen etter navnekontrollen. Nye brukere far aldri tilgang nar kontrollen feiler. Andre roller/personunntak kan fortsatt gi kanaltilgang; manuelle Discord-rettigheter ma vaere riktige. Rollefjerning kobler ikke eksplisitt fra en allerede aktiv voice-forbindelse. Nye kategorier/kanaler ma ogsa fa riktige manuelle rettigheter; kategoriens synlighet alene er ikke nok hvis underkanalene har egne overstyringer.
+### Oppdatere innloggingslenken
+
+`REGISTRATION_URL` leses når botprosessen starter. Etter endring i lokal `.env` må du stoppe og starte `scripts/dev.cmd` på nytt. Når boten kjører med `ACCESS_DRY_RUN=false`, kjør `/setup-access` igjen; eksisterende melding oppdateres med ny lenke. Kommandoens svar viser nå URL-en som ble brukt. Ved kjøring i Dockhand må miljøvariabelen oppdateres og containeren gjenskapes/synkes, ikke bare restartes, før `/setup-access` kjøres. Tørrkjøring publiserer eller oppdaterer ikke meldingen.
+
+### Tilgangssynk og feilsøking
+
+Et vellykket og formatvalidert API-svar brukes som koblingsliste. Mangler en vanlig brukers Discord-ID i et vellykket svar, fjernes tilgangsrollen ved neste kontroll (`revoked`). Crew, roller over Crew, administratorer og servereier unntas. Kallenavnet tilbakestilles ikke; `ACCESS_DRY_RUN=true` fjerner ingen roller.
+
+API-nedetid, HTTP-feil, tidsavbrudd og ugyldig svarformat fjerner ikke eksisterende roller. En vellykket tom liste regnes derimot som gyldig og kan fjerne tilgang for alle vanlige medlemmer. API-et må derfor returnere en komplett liste over alle koblede Discord-kontoer. Forespørsler, rolletildeling og voice-oppretting feiler trygt hvis API eller rolleoppsett ikke kan kontrolleres. Fjerning av rolle kobler ikke automatisk en allerede aktiv voice-forbindelse fra.
 
 ### Docker og utrulling
 

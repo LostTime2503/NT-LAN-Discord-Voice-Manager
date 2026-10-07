@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mock, test } from "node:test";
-import { Collection, PermissionFlagsBits, PermissionsBitField, type CategoryChannel, type Client, type GuildMember } from "discord.js";
+import { ChannelType, Collection, PermissionFlagsBits, PermissionsBitField, type CategoryChannel, type Client, type GuildMember } from "discord.js";
 import { AccessConfigurationError, AccessManager, describeAccessStartupError, isCrewMember, reconcileMember, startAccessSync, type AccessSettings } from "../src/accessManager.js";
 
 const settings: AccessSettings = {
@@ -39,6 +39,90 @@ test("ordinary members receive nickname before access", async () => {
   const { member, actions } = fixture();
   assert.equal(await reconcileMember(member, person, settings), "verified");
   assert.deepEqual(actions, ["nickname", "role"]);
+});
+
+test("linked nickname edits are immediately restored; dry run and unlinked members are untouched", async () => {
+  const linked = fixture({ nickname: "Manual Nickname" });
+  (linked.member.roles.cache as Collection<string, unknown>).set(settings.accessRoleId, {});
+  Object.assign(linked.member.guild.roles, { fetch: async () => linked.member.guild.roles.cache });
+  Object.assign(linked.member.guild.members, {
+    fetchMe: async () => linked.member.guild.members.me,
+    fetch: async () => linked.member
+  });
+  const manager = new AccessManager(settings, async () => new Map([[linked.member.id, person]]));
+  await manager.handleNicknameUpdate({ guild: linked.member.guild, nickname: null }, linked.member);
+  assert.deepEqual(linked.actions, ["nickname"]);
+
+  const unlinked = fixture({ nickname: "Chosen Nickname" });
+  let apiCalls = 0;
+  const managerForUnlinked = new AccessManager(settings, async () => { apiCalls += 1; return new Map(); });
+  await managerForUnlinked.handleNicknameUpdate({ guild: unlinked.member.guild, nickname: null }, unlinked.member);
+  assert.equal(apiCalls, 0);
+  assert.deepEqual(unlinked.actions, []);
+
+  const dry = fixture({ nickname: "Chosen Nickname" });
+  (dry.member.roles.cache as Collection<string, unknown>).set(settings.accessRoleId, {});
+  const dryManager = new AccessManager({ ...settings, dryRun: true }, async () => new Map([[dry.member.id, person]]));
+  await dryManager.handleNicknameUpdate({ guild: dry.member.guild, nickname: null }, dry.member);
+  assert.deepEqual(dry.actions, []);
+});
+
+test("periodic sync fetches the complete guild member cache once, not every interval", async () => {
+  const { member, actions } = fixture();
+  let fullFetches = 0;
+  let individualFetches = 0;
+  const cache = new Collection([[member.id, member]]);
+  Object.assign(member.guild.roles, { fetch: async () => member.guild.roles.cache });
+  Object.assign(member.guild.members, {
+    cache,
+    fetchMe: async () => member.guild.members.me,
+    fetch: async (options?: { user?: string; force?: boolean }) => {
+      if (options) { individualFetches += 1; return member; }
+      fullFetches += 1;
+      return cache;
+    }
+  });
+  let apiCalls = 0;
+  const manager = new AccessManager(settings, async () => { apiCalls += 1; return new Map([[member.id, person]]); });
+  await manager.sync(member.guild);
+  await manager.sync(member.guild);
+  assert.equal(fullFetches, 1);
+  assert.equal(individualFetches, 0);
+  assert.equal(apiCalls, 2);
+  assert.equal(actions.length, 4);
+});
+
+test("entry message uses Norwegian copy and updates the existing link URL", async () => {
+  const { member } = fixture();
+  const botId = "123456789012345682";
+  const captures: Array<{ content: string; components: Array<{ toJSON(): { components: Array<{ label?: string; url?: string; custom_id?: string }> } }> }> = [];
+  const channel = {
+    type: ChannelType.GuildText,
+    permissionsFor: () => new PermissionsBitField([
+      PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory
+    ]),
+    messages: {
+      fetch: async () => new Collection([[
+        "entry",
+        { author: { id: botId }, components: [{ components: [{ customId: "check-registration-access" }] }],
+          edit: async (payload: typeof captures[number]) => { captures.push(payload); } }
+      ]])
+    },
+    send: async (payload: typeof captures[number]) => { captures.push(payload); }
+  };
+  Object.assign(member.guild, { channels: { fetch: async () => channel } });
+  Object.assign(member.guild.members.me!, { id: botId });
+  Object.assign(member.guild.members, { fetchMe: async () => member.guild.members.me });
+  const manager = new AccessManager({ ...settings, websiteUrl: "https://new-login.example/discord" }, async () => new Map());
+  await manager.publishEntry(member.guild);
+  assert.equal(captures.length, 1);
+  const entry = captures[0];
+  assert.match(entry.content, /på nettsiden for å få tilgang/);
+  assert.match(entry.content, /fornavn og initial for siste etternavn/);
+  assert.doesNotMatch(entry.content, /familie|foresatt/i);
+  const buttons = entry.components.flatMap((row) => row.toJSON().components);
+  assert.ok(buttons.some((button) => button.label === "Åpne nettsiden" && button.url === "https://new-login.example/discord"));
+  assert.ok(buttons.some((button) => button.label === "Sjekk tilgang" && button.custom_id === "check-registration-access"));
 });
 
 test("startup validation identifies exact missing roles, hierarchy and permissions", async () => {
@@ -150,7 +234,7 @@ test("dry run and already synchronized members avoid mutations", async () => {
   const dry = fixture();
   assert.equal(await reconcileMember(dry.member, person, { ...settings, dryRun: true }), "dry-run");
   assert.deepEqual(dry.actions, []);
-  const existing = fixture({ nickname: person.name });
+  const existing = fixture({ nickname: "Test P." });
   (existing.member.roles.cache as Collection<string, unknown>).set(settings.accessRoleId, {});
   assert.equal(await reconcileMember(existing.member, person, settings), "verified");
   assert.deepEqual(existing.actions, []);

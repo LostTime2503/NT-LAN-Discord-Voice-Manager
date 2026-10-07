@@ -13,12 +13,20 @@ test("participants are keyed by string Discord IDs and unrelated fields are disc
   assert.throws(() => parseParticipants({ data: { participants: { invalid: {} } } }));
 });
 
-test("names normalize, shorten middle names, and reject unusable names", () => {
-  assert.equal(createNickname({ name: " Test  Person ", firstName: "Test" }), "Test Person");
-  assert.equal(createNickname({ name: "Test Verylongmiddle Anotherlongmiddle Person", firstName: "Test" }), "Test Person");
+test("nicknames keep the first name and use the final surname initial", () => {
+  assert.equal(createNickname({ name: " Leah  Olafsen Opsahlseter ", firstName: "Leah" }), "Leah O.");
+  assert.equal(createNickname({ name: "Test Verylongmiddle Anotherlongmiddle Person", firstName: "Test" }), "Test P.");
+  assert.equal(createNickname({ name: "Anne Marie Wold Hansen", firstName: "Anne Marie" }), "Anne Marie H.");
+  assert.equal(createNickname({ name: "Åse Ødegård", firstName: "Åse" }), "Åse Ø.");
+  assert.equal(createNickname({ name: "Leah", firstName: "Leah" }), "Leah");
+});
+
+test("invalid or overlong abbreviated names are rejected", () => {
   assert.equal(createNickname({ name: "", firstName: "" }), null);
   assert.equal(createNickname({ name: "Test\u0000 Person", firstName: "Test" }), null);
-  assert.equal(createNickname({ name: "Test " + "x".repeat(40), firstName: "Test" }), null);
+  assert.equal(createNickname({ name: "Other Person", firstName: "Test" }), null);
+  assert.equal(createNickname({ name: "Test Person", firstName: "" }), null);
+  assert.equal(createNickname({ name: "x".repeat(33) + " Person", firstName: "x".repeat(33) }), null);
 });
 
 test("concurrent requests share a fetch, refresh after 401, and cache success", async () => {
@@ -106,6 +114,7 @@ test("setup-access publishes the entry without requiring categories or editing p
     assert.equal(validations, 1);
     assert.equal(publications, 1);
     assert.match(reply, /ikke endret/);
+    assert.equal(reply.includes('https://example.test/'), true);
   `;
   const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", script], {
     encoding: "utf8",
@@ -118,5 +127,5 @@ test("setup-access publishes the entry without requiring categories or editing p
       REGISTRATION_TOKEN_URL: options.tokenUrl, REGISTRATION_CLIENT_ID: "test", REGISTRATION_CLIENT_SECRET: "test"
     }
   });
-  assert.equal(result.status, 0, "Manual setup must publish without category configuration or permission mutations.");
+  assert.equal(result.status, 0, `Manual setup must publish without category configuration or permission mutations.\n${result.stderr}\n${result.stdout}`);
 });

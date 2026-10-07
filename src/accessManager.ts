@@ -97,6 +97,7 @@ export async function reconcileMember(
 
 export class AccessManager {
   private syncing = false;
+  private membersLoaded = false;
   private readonly pending = new Map<string, Promise<AccessResult>>();
   private timer: ReturnType<typeof setInterval> | undefined;
   private warnedPermissions = "";
@@ -172,30 +173,41 @@ export class AccessManager {
     try {
       await this.validateGuild(guild);
       const people = await this.getParticipants();
-      const members = await guild.members.fetch();
+      const members = this.membersLoaded ? guild.members.cache : await guild.members.fetch();
+      this.membersLoaded = true;
       const counts: Partial<Record<AccessResult | "failed", number>> = {};
       for (const member of members.values()) {
         if (member.user.bot) continue;
         let result: AccessResult | "failed";
-        try { result = await this.check(member, people); } catch { result = "failed"; }
+        try { result = await this.check(member, people, false); } catch { result = "failed"; }
         counts[result] = (counts[result] ?? 0) + 1;
       }
       console.log("Access sync summary", { dryRun: this.settings.dryRun, ...counts });
     } finally { this.syncing = false; }
   }
 
-  async check(member: GuildMember, people?: Map<string, RegisteredPerson>): Promise<AccessResult> {
+  async check(member: GuildMember, people?: Map<string, RegisteredPerson>, forceRefresh = true): Promise<AccessResult> {
     if (member.guild.id !== this.settings.guildId || member.user.bot) throw new Error("Member outside configured access scope.");
     const existing = this.pending.get(member.id);
     if (existing) return existing;
     const task = (async () => {
       if (!people) await this.validateGuild(member.guild);
       const records = people ?? await this.getParticipants();
-      const current = await member.guild.members.fetch({ user: member.id, force: true });
+      const current = forceRefresh ? await member.guild.members.fetch({ user: member.id, force: true }) : member;
       return reconcileMember(current, records.get(member.id), this.settings);
     })();
     this.pending.set(member.id, task);
     try { return await task; } finally { this.pending.delete(member.id); }
+  }
+
+  async handleNicknameUpdate(oldMember: Pick<GuildMember, "guild" | "nickname">, newMember: GuildMember): Promise<void> {
+    if (this.settings.dryRun || oldMember.guild.id !== this.settings.guildId || newMember.user.bot
+      || oldMember.nickname === newMember.nickname) return;
+    const linked = newMember.roles.cache.has(this.settings.accessRoleId);
+    let exempt = false;
+    try { exempt = isCrewMember(newMember, this.settings.crewRoleId); } catch { /* Access sync reports missing role configuration. */ }
+    if (!linked && !exempt) return;
+    await this.check(newMember);
   }
 
   canUseVoice(member: GuildMember): boolean {
@@ -222,12 +234,12 @@ export class AccessManager {
       const member = await interaction.guild.members.fetch(interaction.user.id);
       const result = await this.check(member);
       const messages: Record<AccessResult, string> = {
-        exempt: "Du har tilgang gjennom Crew eller en hoyere rolle. Sett fullt navn selv hvis boten ikke kan endre det.",
-        "not-linked": "Vi fant ikke Discord-koblingen din. Logg inn pa nettsiden og prov igjen om litt. Kontakt Crew hvis du allerede har koblet kontoen.",
-        revoked: "Vi finner ikke lenger Discord-koblingen din. Tilgangsrollen er fjernet. Koble Discord til pa nettsiden for a fa tilgang igjen.",
+        exempt: "Du har tilgang gjennom Crew eller en høyere rolle. Oppdater kallenavnet selv hvis boten ikke kan endre det.",
+        "not-linked": "Vi fant ikke Discord-koblingen din. Logg inn på nettsiden og prøv igjen. Du trenger ikke være påmeldt årets LAN. Kontakt Crew hvis du allerede har koblet kontoen.",
+        revoked: "Vi finner ikke lenger Discord-koblingen din. Tilgangsrollen er fjernet. Koble Discord til på nettsiden for å få tilgang igjen.",
         "manual-name": "Navnet kan ikke brukes automatisk som kallenavn. Kontakt Crew for hjelp.",
         "cannot-rename": "Boten kan ikke endre kallenavnet ditt. Kontakt Crew for hjelp.",
-        "dry-run": "Kontrollen er fullfort i testmodus. Ingen navn eller roller er endret.",
+        "dry-run": "Kontrollen er fullført i testmodus. Ingen navn eller roller er endret.",
         verified: "Kallenavnet er oppdatert, og du har tilgang til serveren."
       };
       await interaction.editReply(messages[result]);
@@ -244,9 +256,9 @@ export class AccessManager {
       throw new Error("Bot cannot publish the entry message in access channel.");
     }
     if (this.settings.dryRun) return;
-    const content = "Velkommen til NT-LAN! Logg inn med Discord pa nettsiden for a fa tilgang. Vi bruker fullt navn som kallenavn. Du trenger ikke vaere pameldt arets LAN.";
+    const content = "Velkommen til NT-LAN! Logg inn med Discord på nettsiden for å få tilgang. Kallenavnet vises som fornavn og initial for siste etternavn, for eksempel Ola N. Du trenger ikke være påmeldt årets LAN.";
     const components = [new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel("Apne nettsiden").setURL(this.settings.websiteUrl),
+      new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel("Åpne nettsiden").setURL(this.settings.websiteUrl),
       new ButtonBuilder().setStyle(ButtonStyle.Primary).setLabel("Sjekk tilgang").setCustomId(ACCESS_BUTTON_ID)
     )];
     const messages = await channel.messages.fetch({ limit: 100 });

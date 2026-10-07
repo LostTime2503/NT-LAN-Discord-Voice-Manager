@@ -45,7 +45,7 @@ export const config = {
   accessRoleId: process.env.ACCESS_ROLE_ID,
   crewRoleId: process.env.CREW_ROLE_ID,
   accessDryRun: readOptionalBoolean("ACCESS_DRY_RUN", true),
-  accessSyncIntervalMs: readOptionalPositiveInteger("ACCESS_SYNC_INTERVAL_MS", 60_000),
+  accessSyncIntervalMs: readOptionalPositiveInteger("ACCESS_SYNC_INTERVAL_MS", 15_000),
   registrationUrl: process.env.REGISTRATION_URL,
   registrationApiUrl: process.env.REGISTRATION_API_URL,
   registrationTokenUrl: process.env.REGISTRATION_TOKEN_URL,
