@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mock, test } from "node:test";
-import { Collection, PermissionFlagsBits, PermissionsBitField, type CategoryChannel, type Client, type GuildMember } from "discord.js";
-import { AccessConfigurationError, AccessManager, describeAccessStartupError, isCrewMember, reconcileMember, startAccessSync, type AccessSettings } from "../src/accessManager.js";
+import { ChannelType, Collection, PermissionFlagsBits, PermissionsBitField, type CategoryChannel, type Client, type GuildMember } from "discord.js";
+import { AccessConfigurationError, AccessManager, FAMILY_PARENT_BUTTON_ID, describeAccessStartupError, isCrewMember, reconcileMember, startAccessSync, type AccessSettings } from "../src/accessManager.js";
 
 const settings: AccessSettings = {
   guildId: "123456789012345678", accessRoleId: "123456789012345679", crewRoleId: "123456789012345680",
@@ -39,6 +39,70 @@ test("ordinary members receive nickname before access", async () => {
   const { member, actions } = fixture();
   assert.equal(await reconcileMember(member, person, settings), "verified");
   assert.deepEqual(actions, ["nickname", "role"]);
+});
+
+test("entry message optionally points children to the family channel", async () => {
+  const familyChannelId = "123456789012345687";
+  for (const configured of [false, true]) {
+    const { member } = fixture();
+    let content = "";
+    const channel = {
+      type: ChannelType.GuildText,
+      permissionsFor: () => new PermissionsBitField([
+        PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory
+      ]),
+      messages: { fetch: async () => new Collection() },
+      send: async (payload: { content: string }) => { content = payload.content; }
+    };
+    Object.assign(member.guild, { channels: { fetch: async () => channel } });
+    Object.assign(member.guild.members, { fetchMe: async () => member.guild.members.me });
+    const manager = new AccessManager({ ...settings, familyChannelId: configured ? familyChannelId : undefined }, async () => new Map());
+    await manager.publishEntry(member.guild);
+    assert.equal(content.includes(`<#${familyChannelId}>`), configured);
+    assert.equal(content.includes("tilgang via foresatt"), configured);
+    assert.match(content, /Logg inn med Discord/);
+  }
+  assert.throws(() => new AccessManager({ ...settings, familyChannelId: "invalid" }, async () => new Map()), /FAMILY_ACCESS_CHANNEL_ID/);
+});
+
+test("family entry has two buttons, updates existing messages, and respects dry run", async () => {
+  const familyChannelId = "123456789012345687";
+  const botId = "123456789012345682";
+  for (const mode of ["new", "existing", "dry"] as const) {
+    const { member, actions } = fixture();
+    let sends = 0;
+    let edits = 0;
+    let serialized = "";
+    const existing = {
+      author: { id: botId },
+      components: [{ components: [{ customId: FAMILY_PARENT_BUTTON_ID }] }],
+      edit: async (payload: { content: string; components: unknown[] }) => { edits += 1; serialized = JSON.stringify(payload); }
+    };
+    const channel = {
+      type: ChannelType.GuildText,
+      permissionsFor: () => new PermissionsBitField([
+        PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory
+      ]),
+      messages: { fetch: async () => new Collection(mode === "existing" ? [["message", existing]] : []) },
+      send: async (payload: { content: string; components: unknown[] }) => { sends += 1; serialized = JSON.stringify(payload); }
+    };
+    Object.assign(member.guild, { channels: { fetch: async () => channel } });
+    Object.assign(member.guild.members.me!, { id: botId });
+    Object.assign(member.guild.members, { fetchMe: async () => member.guild.members.me });
+    const manager = new AccessManager({ ...settings, familyChannelId, dryRun: mode === "dry" }, async () => new Map());
+    await manager.publishFamilyEntry(member.guild);
+    assert.equal(sends, mode === "new" ? 1 : 0);
+    assert.equal(edits, mode === "existing" ? 1 : 0);
+    assert.deepEqual(actions, []);
+    if (mode !== "dry") {
+      assert.match(serialized, /Jeg er foresatt/);
+      assert.match(serialized, /Jeg trenger tilgang via foresatt/);
+      assert.match(serialized, /Discords alderskrav/);
+      assert.match(serialized, /foresatt har bekreftet/);
+    }
+  }
+  const manager = new AccessManager(settings, async () => new Map());
+  await assert.rejects(manager.publishFamilyEntry(fixture().member.guild), /FAMILY_ACCESS_CHANNEL_ID/);
 });
 
 test("startup validation identifies exact missing roles, hierarchy and permissions", async () => {
@@ -200,6 +264,26 @@ test("API failure preserves an existing access role while a successful missing r
   assert.equal(await successful.check(member), "revoked");
   assert.equal(member.roles.cache.has(settings.accessRoleId), false);
   assert.deepEqual(actions, ["remove-role"]);
+});
+
+test("family links authorize a unique API child, but not renamed, duplicate, or orphaned children", async () => {
+  const parentId = "123456789012345690";
+  const childId = "123456789012345691";
+  const childMember = fixture();
+  Object.assign(childMember.member, { id: childId });
+  const participants = new Map([[parentId, { name: "Parent Person", firstName: "Parent", children: [{ name: "Child Person", firstName: "Child" }] }]]);
+  let links = [{ parentDiscordId: parentId, childName: "Child Person", childDiscordId: childId, linkedAt: Date.now() }];
+  const manager = new AccessManager(settings, async () => participants, async () => links);
+  assert.equal((await manager.getAuthorizedPeople()).get(childId)?.name, "Child Person");
+  links = [{ ...links[0], childName: "Old Child Name" }];
+  assert.equal((await manager.getAuthorizedPeople()).has(childId), false);
+  links = [{ ...links[0], childName: "Child Person" }];
+  participants.set(parentId, { ...participants.get(parentId)!, children: [
+    { name: "Child Person", firstName: "Child" }, { name: " child   person ", firstName: "Child" }
+  ] });
+  assert.equal((await manager.getAuthorizedPeople()).has(childId), false);
+  participants.delete(parentId);
+  assert.equal((await manager.getAuthorizedPeople()).has(childId), false);
 });
 
 test("missing role management permissions cannot trigger access removal", async () => {

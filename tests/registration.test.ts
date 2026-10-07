@@ -4,13 +4,18 @@ import { spawnSync } from "node:child_process";
 import { createNickname, parseParticipants, RegistrationClient } from "../src/registrationClient.js";
 
 const discordId = "123456789012345678";
-const payload = { data: { participants: { [discordId]: { name: "Test Person", firstName: "Test", crew: true } } } };
+const payload = { data: { participants: { [discordId]: { name: "Test Person", firstName: "Test", children: [], crew: true } } } };
 const options = { apiUrl: "https://example.test/api", tokenUrl: "https://example.test/token", clientId: "test", clientSecret: "test" };
 
 test("participants are keyed by string Discord IDs and unrelated fields are discarded", () => {
-  assert.deepEqual(parseParticipants(payload).get(discordId), { name: "Test Person", firstName: "Test" });
+  assert.deepEqual(parseParticipants(payload).get(discordId), { name: "Test Person", firstName: "Test", children: [] });
+  const withChild = parseParticipants({ data: { participants: { [discordId]: {
+    name: "Parent", firstName: "Parent", children: [{ name: "Example Child", firstName: "Example", days: ["friday"] }]
+  } } } });
+  assert.deepEqual(withChild.get(discordId)?.children, [{ name: "Example Child", firstName: "Example" }]);
   assert.throws(() => parseParticipants({ data: { participants: [] } }));
   assert.throws(() => parseParticipants({ data: { participants: { invalid: {} } } }));
+  assert.throws(() => parseParticipants({ data: { participants: { [discordId]: { name: "Parent", firstName: "Parent", children: [{ name: 7 }] } } } }));
 });
 
 test("names normalize, shorten middle names, and reject unusable names", () => {
@@ -53,6 +58,7 @@ test("command definitions load without initializing incomplete access configurat
     const { commands } = await import('./src/commands/index.ts');
     const definitions = commands.map(command => command.data.toJSON());
     if (!definitions.some(command => command.name === 'setup-access')) throw new Error('Missing setup-access');
+    if (!definitions.some(command => command.name === 'setup-family-access')) throw new Error('Missing setup-family-access');
     if (!definitions.some(command => command.name === 'voice-name')) throw new Error('Missing voice-name');
     const { default: assert } = await import('node:assert/strict');
     assert.equal(definitions.find(command => command.name === 'setup-access').options.some(option => option.name === 'beskytt_kanaler'), false);

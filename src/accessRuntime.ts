@@ -1,6 +1,9 @@
 import { config } from "./config.js";
 import { AccessConfigurationError, AccessManager } from "./accessManager.js";
 import { RegistrationClient } from "./registrationClient.js";
+import { FamilyStore } from "./familyStore.js";
+
+export const familyStore = new FamilyStore();
 
 function createAccessManager(): AccessManager | undefined {
   const registrationValues = [config.registrationApiUrl, config.registrationTokenUrl, config.registrationClientId, config.registrationClientSecret];
@@ -22,10 +25,11 @@ function createAccessManager(): AccessManager | undefined {
     accessRoleId: config.accessRoleId,
     crewRoleId: config.crewRoleId,
     channelId: config.accessChannelId,
+    familyChannelId: config.familyAccessChannelId,
     websiteUrl: config.registrationUrl,
     dryRun: config.accessDryRun,
     intervalMs: config.accessSyncIntervalMs
-  }, () => api.getParticipants());
+  }, () => api.getParticipants(), () => familyStore.getLinks());
 }
 
 function initializeAccess(): { accessManager?: AccessManager; accessInitializationError?: string } {

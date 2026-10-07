@@ -3,8 +3,11 @@ import {
   type ButtonInteraction, type CategoryChannel, type Client, type Guild, type GuildMember
 } from "discord.js";
 import { createNickname, type RegisteredPerson } from "./registrationClient.js";
+import { normalizeChildName, type FamilyLink } from "./familyStore.js";
 
 export const ACCESS_BUTTON_ID = "check-registration-access";
+export const FAMILY_PARENT_BUTTON_ID = "family-access-parent";
+export const FAMILY_CHILD_BUTTON_ID = "family-access-child";
 
 const administrativePermissions = [
   "Administrator", "ManageGuild", "ManageRoles", "ManageChannels", "ManageWebhooks",
@@ -18,6 +21,7 @@ export interface AccessSettings {
   accessRoleId: string;
   crewRoleId: string;
   channelId: string;
+  familyChannelId?: string;
   websiteUrl: string;
   dryRun: boolean;
   intervalMs: number;
@@ -103,12 +107,16 @@ export class AccessManager {
 
   constructor(
     readonly settings: AccessSettings,
-    private readonly getParticipants: () => Promise<Map<string, RegisteredPerson>>
+    private readonly getParticipants: () => Promise<Map<string, RegisteredPerson>>,
+    private readonly getFamilyLinks: () => Promise<FamilyLink[]> = async () => []
   ) {
     const url = new URL(settings.websiteUrl);
     if (url.protocol !== "https:" || url.username || url.password) throw new Error("REGISTRATION_URL must use HTTPS.");
     for (const id of [settings.guildId, settings.accessRoleId, settings.crewRoleId, settings.channelId]) {
       if (!/^\d{17,20}$/.test(id)) throw new Error("Access configuration requires valid Discord IDs.");
+    }
+    if (settings.familyChannelId && !/^\d{17,20}$/.test(settings.familyChannelId)) {
+      throw new Error("FAMILY_ACCESS_CHANNEL_ID must be a valid Discord channel ID.");
     }
     if (settings.accessRoleId === settings.crewRoleId) throw new Error("Access and Crew roles must be different.");
   }
@@ -171,7 +179,7 @@ export class AccessManager {
     this.syncing = true;
     try {
       await this.validateGuild(guild);
-      const people = await this.getParticipants();
+      const people = await this.getAuthorizedPeople();
       const members = await guild.members.fetch();
       const counts: Partial<Record<AccessResult | "failed", number>> = {};
       for (const member of members.values()) {
@@ -190,12 +198,30 @@ export class AccessManager {
     if (existing) return existing;
     const task = (async () => {
       if (!people) await this.validateGuild(member.guild);
-      const records = people ?? await this.getParticipants();
+      const records = people ?? await this.getAuthorizedPeople();
       const current = await member.guild.members.fetch({ user: member.id, force: true });
       return reconcileMember(current, records.get(member.id), this.settings);
     })();
     this.pending.set(member.id, task);
     try { return await task; } finally { this.pending.delete(member.id); }
+  }
+
+  async getAuthorizedPeople(): Promise<Map<string, RegisteredPerson>> {
+    const people = new Map(await this.getParticipants());
+    const links = await this.getFamilyLinks();
+    for (const link of links) {
+      const parent = people.get(link.parentDiscordId);
+      if (!parent) continue;
+      const matchingChildren = parent.children.filter((child) => normalizeChildName(child.name) === normalizeChildName(link.childName));
+      if (matchingChildren.length !== 1 || people.has(link.childDiscordId)) continue;
+      const child = matchingChildren[0];
+      people.set(link.childDiscordId, { name: child.name, firstName: child.firstName, children: [] });
+    }
+    return people;
+  }
+
+  async getRegistrationSnapshot(): Promise<Map<string, RegisteredPerson>> {
+    return new Map(await this.getParticipants());
   }
 
   canUseVoice(member: GuildMember): boolean {
@@ -236,6 +262,29 @@ export class AccessManager {
     }
   }
 
+  async publishFamilyEntry(guild: Guild): Promise<void> {
+    if (guild.id !== this.settings.guildId) throw new Error("Family access must be published in the configured server.");
+    if (!this.settings.familyChannelId) throw new Error("Set FAMILY_ACCESS_CHANNEL_ID before publishing family access.");
+    const channel = await guild.channels.fetch(this.settings.familyChannelId);
+    if (channel?.type !== ChannelType.GuildText) throw new Error("FAMILY_ACCESS_CHANNEL_ID must be a text channel.");
+    const me = await guild.members.fetchMe();
+    if (!channel.permissionsFor(me)?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory])) {
+      throw new Error("Bot requires View Channel, Send Messages and Read Message History in the family access channel.");
+    }
+    if (this.settings.dryRun) return;
+    const content = "Familietilgang til NT-LAN\n\nBruk dette bare for kontoer som oppfyller Discords alderskrav. Foresatte kan koble et barn som allerede er pa serveren, forberede en tidsbegrenset invitasjon eller behandle foresporsler. Barn kan be en registrert foresatt om tilgang.\n\nEn familiekobling gir ikke tilgang for foresatt har bekreftet riktig barn og Discord-konto. Familieopplysninger og godkjenning vises privat.";
+    const components = [new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setStyle(ButtonStyle.Primary).setLabel("Jeg er foresatt").setCustomId(FAMILY_PARENT_BUTTON_ID),
+      new ButtonBuilder().setStyle(ButtonStyle.Secondary).setLabel("Jeg trenger tilgang via foresatt").setCustomId(FAMILY_CHILD_BUTTON_ID)
+    )];
+    const messages = await channel.messages.fetch({ limit: 100 });
+    const existing = messages.find((message) => message.author.id === me.id
+      && message.components.some((row) => "components" in row && row.components.some((component) => "customId" in component
+        && (component.customId === FAMILY_PARENT_BUTTON_ID || component.customId === FAMILY_CHILD_BUTTON_ID))));
+    if (existing) await existing.edit({ content, components });
+    else await channel.send({ content, components });
+  }
+
   async publishEntry(guild: Guild): Promise<void> {
     const channel = await guild.channels.fetch(this.settings.channelId);
     if (channel?.type !== ChannelType.GuildText) throw new Error("ACCESS_CHANNEL_ID must be a text channel.");
@@ -244,7 +293,12 @@ export class AccessManager {
       throw new Error("Bot cannot publish the entry message in access channel.");
     }
     if (this.settings.dryRun) return;
-    const content = "Velkommen til NT-LAN! Logg inn med Discord pa nettsiden for a fa tilgang. Vi bruker fullt navn som kallenavn. Du trenger ikke vaere pameldt arets LAN.";
+    const content = [
+      "Velkommen til NT-LAN! Logg inn med Discord pa nettsiden for a fa tilgang. Vi bruker fullt navn som kallenavn. Du trenger ikke vaere pameldt arets LAN.",
+      ...(this.settings.familyChannelId ? [
+        `Er du barn og trenger tilgang via foresatt? Se informasjonen om familietilgang i <#${this.settings.familyChannelId}> sammen med foresatt.`
+      ] : [])
+    ].join("\n\n");
     const components = [new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel("Apne nettsiden").setURL(this.settings.websiteUrl),
       new ButtonBuilder().setStyle(ButtonStyle.Primary).setLabel("Sjekk tilgang").setCustomId(ACCESS_BUTTON_ID)

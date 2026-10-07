@@ -155,6 +155,7 @@ API-formatet er `{ "data": { "participants": { "DISCORD_ID": { "name": "Fullt na
 | Variabel | Beskrivelse |
 | --- | --- |
 | `ACCESS_CHANNEL_ID` | Tekstkanal for inngangsmeldingen. |
+| `FAMILY_ACCESS_CHANNEL_ID` | Familietilgangskanal for private foresatt-/barneflyter. Kanalen ma vaere synlig bade med og uten tilgangsrollen. |
 | `ACCESS_ROLE_ID` | Egen tilgangsrolle under bade bot og Crew. Du bestemmer rettighetene i Discord; administrative rettigheter varsles uten a stoppe boten. |
 | `CREW_ROLE_ID` | Crew-rolle; denne og roller over den gir tilgang uten nettsidekobling. Administrator og servereier unntas ogsa. |
 | `REGISTRATION_URL` | HTTPS-lenken medlemmene apner for a logge inn/koble Discord. |
@@ -179,6 +180,25 @@ Alle fire API-/token-/klientinnstillinger ma fylles ut sammen. Nar de er tomme, 
 8. Test med et vanlig medlem uten crew/admin: inngangskanalen synlig for uverifiserte, navn satt for rolle tildeles, beskyttede kanaler synlige etterpa og inngangskanalen skjult. Test ogsa API-feil, omstart, voice og en Discord-koblet bruker uten arets pamelding.
 
 Inngangsmeldingen har nettsidelenke og **Sjekk tilgang**-knapp. Knappen gir et privat svar. Crew beholder tilgang uten kobling/navn; deres navn oppdateres bare hvis API-et har dem og boten kan endre medlemmet. Hoyere roller og servereier ma sette navn selv. Navn over 32 tegn forkortes til API-ets fornavn og siste navneledd; dersom det fortsatt ikke passer eller navnet er ugyldig, ma Crew hjelpe. Sammensatte etternavn kan kreve manuell kontroll. Boten vedlikeholder navn gjennom polling; ta bort `Change Nickname` fra vanlige medlemsroller dersom egen navneendring skal forbys, men behold den for Crew.
+
+Sett `FAMILY_ACCESS_CHANNEL_ID`, start boten pa nytt, registrer slash-kommandoene med `scripts/deploy-commands.cmd`, og kjor `/setup-family-access`. Kommandoen publiserer eller oppdaterer en melding med **Jeg er foresatt** og **Jeg trenger tilgang via foresatt**. Familiekanalen ma vaere synlig bade for uverifiserte og verifiserte medlemmer; boten trenger View Channel, Send Messages og Read Message History. Dry run publiserer ikke meldingen.
+
+Foresattflyt:
+- Foresatt ma finnes som API-deltaker med minst ett registrert barn. Barneopplysninger vises bare i private interaksjonssvar.
+- Hvis barnet er pa serveren, velger foresatt barnet fra sin egen API-liste, velger barnets Discord-konto med Discords brukervelger, ser en bekreftelse og bekrefter koblingen.
+- Hvis barnet ikke er pa serveren, velger foresatt barnet fra en privat rullegardin og skriver bare barnets eksakte Discord-brukernavn i modalen. Navnet tastes ikke inn manuelt. Invitasjonen varer i 7 dager. Nar en konto med eksakt brukernavn blir med, far foresatt en privat godkjenningsknapp. Brukernavn alene gir aldri tilgang.
+- Foresatt kan se ventende koblinger, avvise foresporsler, avbryte invitasjoner og fjerne lagrede koblinger.
+
+Barneflyt:
+- Barnet blir med med en vanlig serverinvitasjon og trykker **Jeg trenger tilgang via foresatt**. Brukervelgeren viser foresatte som allerede er medlemmer.
+- Valgt foresatt ma finnes i API-et med barn. Foresatt far en DM med godkjenningsknapp; hvis DM er blokkert, ligger foresporselen i **Se foresporsler og invitasjoner** i familiekanalen.
+- Ved godkjenning velger foresatt sitt barn fra API-listen. Forst da lagres koblingen og tilgangs-/navnesynken kjores. Foresporsler utloeper etter 48 timer. Det er maksimalt tre ventende foresattforesporsler per Discord-konto.
+
+Familiekoblinger lagres i `data/family-access.json` i Docker-volumet `bot-data`; filen er lokal runtime-data og ignorert av Git. API-et gir enn sa ingen stabil barn-ID, sa forelopig identitet er `(foresattes Discord-ID + barnets normaliserte fulle navn)`. Menyvalg lagrer selve navnet, ikke posisjonen i `children`, sa endret rekkefolge gir ikke feil barn. Like barnenavn under samme foresatt blokkeres. Koblingen gis ikke tilgang hvis foresatt fjernes fra API-et, barnet forsvinner, navnet endres eller blir tvetydig. Ved navneendring ma foresatt fjerne gammel kobling og opprette den pa nytt. En stabil barn-ID fra API-et vil gjore denne koblingen tryggere over tid.
+
+Barnets Discord-ID lagres som koblingsmal; Discord-brukernavn brukes bare for en tidsbegrenset innmeldingsinvitasjon. Kontoen far ikke tilgang for foresatt har bekreftet. Ved kobling setter boten barnets fulle API-navn som kallenavn og gir tilgangsrollen bare hvis navnesynken lykkes. Dette betyr at fullt navn vises pa Discord-serveren; vurder personvern for utrulling. Fjernes familiekoblingen, fjernes tilgangsrollen ved kontroll hvis barnet ikke ogsa har en selvstendig API-oppforing. Kallenavn tilbakestilles ikke. API-feil fjerner ingen tilgang. Ubesvarte invitasjoner foresporsler kan behandles pa nytt innen utlopstiden.
+
+Del en vanlig serverinvitasjon med barnet; boten oppretter ikke Discord-serverinvitasjoner. Bruk bare flyten for kontoer som oppfyller Discords alderskrav. Boten kan ikke kontrollere alder; foresatt bekrefter dette ved godkjenning. Discord-kontoer, navn, relasjoner og tilgang er personopplysninger, sa hold koblinger i lukket driftsmiljo og avklar personvernpraksis for produksjon. Hvis `ACCESS_DRY_RUN=true`, opprettes ingen familiekoblinger, invitasjoner eller foresporsler.
 
 ### Kanalrettigheter og tilbakeforing
 

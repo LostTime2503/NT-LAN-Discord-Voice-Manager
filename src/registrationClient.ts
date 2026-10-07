@@ -1,6 +1,12 @@
 export interface RegisteredPerson {
   name: string;
   firstName: string;
+  children: RegisteredChild[];
+}
+
+export interface RegisteredChild {
+  name: string;
+  firstName: string;
 }
 
 export interface RegistrationOptions {
@@ -21,10 +27,18 @@ export function parseParticipants(payload: unknown): Map<string, RegisteredPerso
   const result = new Map<string, RegisteredPerson>();
   for (const [discordId, person] of Object.entries(payload.data.participants)) {
     if (!/^\d{17,20}$/.test(discordId) || !isRecord(person) || typeof person.name !== "string"
-      || typeof person.firstName !== "string") {
+      || typeof person.firstName !== "string" || (person.children !== undefined && !Array.isArray(person.children))) {
       throw new Error("Registration API returned an invalid participant.");
     }
-    result.set(discordId, { name: person.name, firstName: person.firstName });
+    const children = (person.children ?? []) as unknown[];
+    if (children.some((child) => !isRecord(child) || typeof child.name !== "string" || typeof child.firstName !== "string")) {
+      throw new Error("Registration API returned an invalid child record.");
+    }
+    result.set(discordId, {
+      name: person.name,
+      firstName: person.firstName,
+      children: children.map((child) => ({ name: (child as RegisteredChild).name, firstName: (child as RegisteredChild).firstName }))
+    });
   }
   return result;
 }

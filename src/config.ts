@@ -42,6 +42,7 @@ export const config = {
   crewLogChannelId: process.env.CREW_LOG_CHANNEL_ID,
   emptyChannelDeleteDelayMs: readOptionalPositiveInteger("EMPTY_CHANNEL_DELETE_DELAY_MS", 300_000),
   accessChannelId: process.env.ACCESS_CHANNEL_ID,
+  familyAccessChannelId: process.env.FAMILY_ACCESS_CHANNEL_ID,
   accessRoleId: process.env.ACCESS_ROLE_ID,
   crewRoleId: process.env.CREW_ROLE_ID,
   accessDryRun: readOptionalBoolean("ACCESS_DRY_RUN", true),
