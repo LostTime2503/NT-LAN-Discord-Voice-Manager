@@ -26,6 +26,16 @@ function readOptionalPositiveInteger(name: string, fallback: number): number {
   return value;
 }
 
+function readOptionalPositiveIntegerValue(name: string): number | undefined {
+  const rawValue = process.env[name];
+  if (!rawValue) return undefined;
+  const value = Number(rawValue);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`Environment variable ${name} must be a positive integer.`);
+  }
+  return value;
+}
+
 function readOptionalBoolean(name: string, fallback: boolean): boolean {
   const value = process.env[name];
   if (!value) return fallback;
@@ -38,7 +48,15 @@ export const config = {
   clientId: readRequiredEnv("DISCORD_CLIENT_ID"),
   guildId: readRequiredEnv("DISCORD_GUILD_ID"),
   joinToCreateChannelId: process.env.JOIN_TO_CREATE_CHANNEL_ID,
-  csTeamCategoryId: process.env.CS_TEAM_CATEGORY_ID,
+  csCategoryId: process.env.CS_CATEGORY_ID || process.env.CS_TEAM_CATEGORY_ID,
+  csLobbyChannelId: process.env.CS_LOBBY_CHANNEL_ID,
+  csParticipantRoleId: process.env.CS_PARTICIPANT_ROLE_ID,
+  csSyncDryRun: readOptionalBoolean("CS_SYNC_DRY_RUN", true),
+  csSyncIntervalMs: readOptionalPositiveInteger("CS_SYNC_INTERVAL_MS", 300_000),
+  csMainTournamentId: readOptionalPositiveIntegerValue("CS_MAIN_TOURNAMENT_ID"),
+  csWingmanTournamentId: readOptionalPositiveIntegerValue("CS_WINGMAN_TOURNAMENT_ID"),
+  csWebhookPort: readOptionalPositiveInteger("CS_WEBHOOK_PORT", 8787),
+  matWebhookSecret: process.env.MAT_WEBHOOK_SECRET,
   crewLogChannelId: process.env.CREW_LOG_CHANNEL_ID,
   emptyChannelDeleteDelayMs: readOptionalPositiveInteger("EMPTY_CHANNEL_DELETE_DELAY_MS", 300_000),
   accessChannelId: process.env.ACCESS_CHANNEL_ID,
@@ -50,5 +68,7 @@ export const config = {
   registrationApiUrl: process.env.REGISTRATION_API_URL,
   registrationTokenUrl: process.env.REGISTRATION_TOKEN_URL,
   registrationClientId: process.env.REGISTRATION_CLIENT_ID,
-  registrationClientSecret: process.env.REGISTRATION_CLIENT_SECRET
+  registrationClientSecret: process.env.REGISTRATION_CLIENT_SECRET,
+  matUrl: process.env.MAT_URL,
+  matApiToken: process.env.MAT_API_TOKEN
 };

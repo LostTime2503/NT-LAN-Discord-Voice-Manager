@@ -93,6 +93,6 @@ function createSetupMessage(joinToCreateChannelId: string, csTeamCategoryId: str
     "Voice manager er satt opp.",
     "Legg disse verdiene i .env:",
     `JOIN_TO_CREATE_CHANNEL_ID=${joinToCreateChannelId}`,
-    `CS_TEAM_CATEGORY_ID=${csTeamCategoryId}`
+    `CS_CATEGORY_ID=${csTeamCategoryId}`
   ].join("\n");
 }

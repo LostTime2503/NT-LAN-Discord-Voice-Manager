@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { spawnSync } from "node:child_process";
-import { createNickname, parseParticipants, RegistrationClient } from "../src/registrationClient.js";
+import { createNickname, parseCsParticipants, parseParticipants, RegistrationClient } from "../src/registrationClient.js";
 
 const discordId = "123456789012345678";
 const payload = { data: { participants: { [discordId]: { name: "Test Person", firstName: "Test", crew: true } } } };
@@ -13,10 +13,11 @@ test("participants are keyed by string Discord IDs and unrelated fields are disc
   assert.throws(() => parseParticipants({ data: { participants: { invalid: {} } } }));
 });
 
-test("nicknames keep the first name and use the final surname initial", () => {
-  assert.equal(createNickname({ name: " Leah  Olafsen Opsahlseter ", firstName: "Leah" }), "Leah O.");
-  assert.equal(createNickname({ name: "Test Verylongmiddle Anotherlongmiddle Person", firstName: "Test" }), "Test P.");
-  assert.equal(createNickname({ name: "Anne Marie Wold Hansen", firstName: "Anne Marie" }), "Anne Marie H.");
+test("nicknames keep the first name and initial every remaining name part", () => {
+  assert.equal(createNickname({ name: " Leah  Olafsen Opsahlseter ", firstName: "Leah" }), "Leah O. O.");
+  assert.equal(createNickname({ name: "Test Verylongmiddle Anotherlongmiddle Person", firstName: "Test" }), "Test V. A. P.");
+  assert.equal(createNickname({ name: "Anne Marie Wold Hansen", firstName: "Anne Marie" }), "Anne Marie W. H.");
+  assert.equal(createNickname({ name: "Silje Marie Kornerud", firstName: "Silje" }), "Silje M. K.");
   assert.equal(createNickname({ name: "Åse Ødegård", firstName: "Åse" }), "Åse Ø.");
   assert.equal(createNickname({ name: "Leah", firstName: "Leah" }), "Leah");
 });
@@ -62,6 +63,11 @@ test("command definitions load without initializing incomplete access configurat
     const definitions = commands.map(command => command.data.toJSON());
     if (!definitions.some(command => command.name === 'setup-access')) throw new Error('Missing setup-access');
     if (!definitions.some(command => command.name === 'voice-name')) throw new Error('Missing voice-name');
+    for (const name of ['giveaccess', 'clearaccessoverride', 'cs-link', 'cs-unlink', 'cs-status']) {
+      if (!definitions.some(command => command.name === name)) throw new Error('Missing ' + name);
+    }
+    const giveAccessPerson = definitions.find(command => command.name === 'giveaccess').options.find(option => option.name === 'person');
+    if (giveAccessPerson.type !== 3 || giveAccessPerson.autocomplete !== true) throw new Error('giveaccess person must use member autocomplete');
     const { default: assert } = await import('node:assert/strict');
     assert.equal(definitions.find(command => command.name === 'setup-access').options.some(option => option.name === 'beskytt_kanaler'), false);
     const runtime = await import('./src/accessRuntime.ts');
@@ -128,4 +134,76 @@ test("setup-access publishes the entry without requiring categories or editing p
     }
   });
   assert.equal(result.status, 0, `Manual setup must publish without category configuration or permission mutations.\n${result.stderr}\n${result.stdout}`);
+});
+
+test("participant SteamID64 is retained only when valid", () => {
+  const withSteamId = { data: { participants: {
+    [discordId]: { name: "Test Person", firstName: "Test", steamId: "76561198000000001" }
+  } } };
+  const invalidSteamId = { data: { participants: {
+    [discordId]: { name: "Test Person", firstName: "Test", steamId: "not-a-steam-id" }
+  } } };
+  assert.equal(parseParticipants(withSteamId).get(discordId)?.steamId, "76561198000000001");
+  assert.equal(parseParticipants(invalidSteamId).get(discordId)?.steamId, undefined);
+});
+
+test("CS participants include Discord-linked children without changing access participants", () => {
+  const guardianId = "123456789012345678";
+  const childDiscordId = "123456789012345679";
+  const payloadWithChildren = { data: { participants: {
+    [guardianId]: {
+      name: "Guardian Person", firstName: "Guardian", steamId: "76561198000000001", tournaments: ["cs2"],
+      children: [
+        { id: "child-linked", discordId: childDiscordId, name: "Child Person", firstName: "Child", steamId: "76561198000000002", tournaments: ["cs2-wingman"] },
+        { id: "child-unlinked", discordId: "", name: "Unlinked Child", firstName: "Unlinked", steamId: "76561198000000003" }
+      ]
+    }
+  } } };
+
+  assert.equal(parseParticipants(payloadWithChildren).size, 1);
+  const csParticipants = parseCsParticipants(payloadWithChildren);
+  assert.equal(csParticipants.size, 2);
+  assert.deepEqual(csParticipants.get(childDiscordId), {
+    name: "Child Person", firstName: "Child", steamId: "76561198000000002", tournaments: ["cs2-wingman"]
+  });
+  assert.deepEqual(csParticipants.get(guardianId)?.tournaments, ["cs2"]);
+});
+
+test("duplicate child Discord IDs are retained without a Steam mapping", () => {
+  const guardianId = "123456789012345678";
+  const childDiscordId = "123456789012345679";
+  const payloadWithDuplicateChild = { data: { participants: {
+    [guardianId]: {
+      name: "Guardian Person", firstName: "Guardian",
+      children: [
+        { id: "child-one", discordId: childDiscordId, name: "Child One", firstName: "Child", steamId: "76561198000000002" },
+        { id: "child-two", discordId: childDiscordId, name: "Child Two", firstName: "Child", steamId: "76561198000000003" }
+      ]
+    }
+  } } };
+  assert.equal(parseCsParticipants(payloadWithDuplicateChild).get(childDiscordId)?.steamId, undefined);
+});
+
+test("registration client shares its response cache while exposing separate access and CS views", async () => {
+  let apiCalls = 0;
+  const childDiscordId = "123456789012345679";
+  const responsePayload = { data: { participants: {
+    [discordId]: {
+      name: "Guardian Person", firstName: "Guardian",
+      children: [{ id: "child", discordId: childDiscordId, name: "Child Person", firstName: "Child", steamId: "76561198000000002" }]
+    }
+  } } };
+  const request: typeof fetch = async url => {
+    if (url === options.tokenUrl) return Response.json({ access_token: "synthetic", expires_in: 300 });
+    apiCalls += 1;
+    return Response.json(responsePayload);
+  };
+  const client = new RegistrationClient(options, request);
+  const accessParticipants = await client.getParticipants();
+  const csParticipants = await client.getCsParticipants();
+  assert.equal(accessParticipants.size, 1);
+  assert.equal(accessParticipants.has(childDiscordId), false);
+  assert.equal(csParticipants.size, 2);
+  assert.equal(csParticipants.get(childDiscordId)?.steamId, "76561198000000002");
+  assert.equal(apiCalls, 1);
 });

@@ -9,6 +9,9 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "deploy:commands": "tsx src/deploy-commands.ts",
+    "probe:mat": "node scripts/probe-mat-public.mjs",
+    "probe:mat-readonly": "node scripts/probe-mat-readonly.mjs",
+    "probe:registration-steam": "node scripts/probe-registration-steam.mjs",
     "test": "tsx --test tests/*.test.ts"
   },
   "dependencies": {

@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import { mock, test } from "node:test";
 import { ChannelType, Collection, PermissionFlagsBits, PermissionsBitField, type CategoryChannel, type Client, type GuildMember } from "discord.js";
 import { AccessConfigurationError, AccessManager, describeAccessStartupError, isCrewMember, reconcileMember, startAccessSync, type AccessSettings } from "../src/accessManager.js";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { ManualOverrideStore } from "../src/manualOverrides.js";
 
 const settings: AccessSettings = {
   guildId: "123456789012345678", accessRoleId: "123456789012345679", crewRoleId: "123456789012345680",
@@ -39,6 +43,46 @@ test("ordinary members receive nickname before access", async () => {
   const { member, actions } = fixture();
   assert.equal(await reconcileMember(member, person, settings), "verified");
   assert.deepEqual(actions, ["nickname", "role"]);
+});
+
+test("manual access override keeps the chosen nickname until Crew clears it", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "manual-access-"));
+  const { member, actions } = fixture();
+  const accessRole = member.guild.roles.cache.get(settings.accessRoleId)!;
+  Object.assign(member.guild.roles, { fetch: async () => member.guild.roles.cache });
+  Object.assign(member.guild.members, {
+    fetchMe: async () => member.guild.members.me,
+    fetch: async () => member
+  });
+  Object.assign(member.roles, { add: async (roleId: string) => {
+    actions.push("role");
+    member.roles.cache.set(roleId, accessRole);
+  } });
+  Object.assign(member, { setNickname: async (nickname: string) => {
+    actions.push("nickname");
+    member.nickname = nickname;
+  } });
+  let apiCalls = 0;
+  const manualOverrides = new ManualOverrideStore(join(directory, "overrides.json"));
+  const manager = new AccessManager(settings, async () => {
+    apiCalls += 1;
+    return new Map([[member.id, { name: "Website Name", firstName: "Website" }]]);
+  }, manualOverrides);
+
+  try {
+    await manager.grantManualAccess(member, "Chosen Nickname", "123456789012345685");
+    assert.deepEqual(actions, ["nickname", "role"]);
+    assert.equal(member.nickname, "Chosen Nickname");
+    assert.equal(await manager.check(member), "manual-override");
+    assert.equal(member.nickname, "Chosen Nickname");
+    assert.equal(apiCalls, 0);
+
+    assert.equal(await manager.clearManualAccess(member), true);
+    assert.equal(member.nickname, "Website N.");
+    assert.equal(apiCalls, 1);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("linked nickname edits are immediately restored; dry run and unlinked members are untouched", async () => {

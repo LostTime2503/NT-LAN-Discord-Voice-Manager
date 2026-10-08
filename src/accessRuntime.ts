@@ -1,6 +1,7 @@
 import { config } from "./config.js";
 import { AccessConfigurationError, AccessManager } from "./accessManager.js";
 import { RegistrationClient } from "./registrationClient.js";
+import { manualOverrideStore } from "./manualOverrides.js";
 
 function createAccessManager(): AccessManager | undefined {
   const registrationValues = [config.registrationApiUrl, config.registrationTokenUrl, config.registrationClientId, config.registrationClientSecret];
@@ -25,7 +26,7 @@ function createAccessManager(): AccessManager | undefined {
     websiteUrl: config.registrationUrl,
     dryRun: config.accessDryRun,
     intervalMs: config.accessSyncIntervalMs
-  }, () => api.getParticipants());
+  }, () => api.getParticipants(), manualOverrideStore);
 }
 
 function initializeAccess(): { accessManager?: AccessManager; accessInitializationError?: string } {

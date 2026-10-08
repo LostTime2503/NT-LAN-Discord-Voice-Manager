@@ -3,6 +3,7 @@ import {
   type ButtonInteraction, type CategoryChannel, type Client, type Guild, type GuildMember
 } from "discord.js";
 import { createNickname, type RegisteredPerson } from "./registrationClient.js";
+import type { ManualAccessOverride, ManualOverrideStore } from "./manualOverrides.js";
 
 export const ACCESS_BUTTON_ID = "check-registration-access";
 
@@ -23,7 +24,7 @@ export interface AccessSettings {
   intervalMs: number;
 }
 
-export type AccessResult = "exempt" | "not-linked" | "revoked" | "manual-name" | "cannot-rename" | "dry-run" | "verified";
+export type AccessResult = "exempt" | "not-linked" | "revoked" | "manual-name" | "cannot-rename" | "dry-run" | "verified" | "manual-override";
 
 export class AccessConfigurationError extends Error {}
 
@@ -104,7 +105,8 @@ export class AccessManager {
 
   constructor(
     readonly settings: AccessSettings,
-    private readonly getParticipants: () => Promise<Map<string, RegisteredPerson>>
+    private readonly getParticipants: () => Promise<Map<string, RegisteredPerson>>,
+    private readonly manualOverrides?: ManualOverrideStore
   ) {
     const url = new URL(settings.websiteUrl);
     if (url.protocol !== "https:" || url.username || url.password) throw new Error("REGISTRATION_URL must use HTTPS.");
@@ -148,6 +150,7 @@ export class AccessManager {
     if (this.timer) return;
     const guild = await client.guilds.fetch(this.settings.guildId);
     await this.validateGuild(guild);
+    await this.manualOverrides?.load();
     await this.sync(guild).catch(() => console.error("Initial access sync failed; retrying on the next interval without changing existing access."));
     this.timer = setInterval(() => {
       void this.sync(guild).catch((error) => {
@@ -192,12 +195,60 @@ export class AccessManager {
     if (existing) return existing;
     const task = (async () => {
       if (!people) await this.validateGuild(member.guild);
-      const records = people ?? await this.getParticipants();
       const current = forceRefresh ? await member.guild.members.fetch({ user: member.id, force: true }) : member;
+      const manualOverride = await this.manualOverrides?.getAccessOverride(current.id);
+      if (manualOverride) return this.applyManualAccessOverride(current, manualOverride);
+      const records = people ?? await this.getParticipants();
       return reconcileMember(current, records.get(member.id), this.settings);
     })();
     this.pending.set(member.id, task);
     try { return await task; } finally { this.pending.delete(member.id); }
+  }
+
+  async grantManualAccess(member: GuildMember, nickname: string, actorId: string): Promise<void> {
+    if (!this.manualOverrides) throw new AccessConfigurationError("Manual access overrides are not configured.");
+    if (member.guild.id !== this.settings.guildId || member.user.bot) throw new Error("Target is outside the configured member scope.");
+    if (this.settings.dryRun) throw new AccessConfigurationError("ACCESS_DRY_RUN=true; manual access, nickname, and role were not changed.");
+    await this.validateGuild(member.guild);
+    const override = await this.manualOverrides.grantAccess(member.id, nickname, actorId);
+    try {
+      await this.applyManualAccessOverride(member, override);
+    } catch (error) {
+      await this.manualOverrides.removeAccessOverride(member.id);
+      throw error;
+    }
+  }
+
+  async clearManualAccess(member: GuildMember): Promise<boolean> {
+    if (!this.manualOverrides) throw new AccessConfigurationError("Manual access overrides are not configured.");
+    if (member.guild.id !== this.settings.guildId || member.user.bot) throw new Error("Target is outside the configured member scope.");
+    if (this.settings.dryRun) throw new AccessConfigurationError("ACCESS_DRY_RUN=true; manual access override was not removed.");
+    const removed = await this.manualOverrides.removeAccessOverride(member.id);
+    if (removed) {
+      await this.check(member).catch(() => console.error("Manual access override cleared; automatic sync will retry when the registration API is available."));
+    }
+    return removed;
+  }
+
+  private async applyManualAccessOverride(member: GuildMember, override: ManualAccessOverride): Promise<AccessResult> {
+    const role = member.guild.roles.cache.get(this.settings.accessRoleId);
+    const me = member.guild.members.me;
+    if (!role || role.managed || role.id === member.guild.id
+      || !me?.permissions.has(PermissionFlagsBits.ManageRoles) || me.roles.highest.comparePositionTo(role) <= 0) {
+      throw new AccessConfigurationError("Access role must be manageable by the bot.");
+    }
+    if (member.nickname !== override.nickname
+      && (!member.manageable || !me.permissions.has(PermissionFlagsBits.ManageNicknames))) {
+      throw new AccessConfigurationError("Bot cannot set the requested nickname for this member.");
+    }
+    if (this.settings.dryRun) return "dry-run";
+    if (member.nickname !== override.nickname) {
+      await member.setNickname(override.nickname, `Manual access override by ${override.grantedBy}`);
+    }
+    if (!member.roles.cache.has(this.settings.accessRoleId)) {
+      await member.roles.add(this.settings.accessRoleId, `Manual access override by ${override.grantedBy}`);
+    }
+    return "manual-override";
   }
 
   async handleNicknameUpdate(oldMember: Pick<GuildMember, "guild" | "nickname">, newMember: GuildMember): Promise<void> {
@@ -240,7 +291,8 @@ export class AccessManager {
         "manual-name": "Navnet kan ikke brukes automatisk som kallenavn. Kontakt Crew for hjelp.",
         "cannot-rename": "Boten kan ikke endre kallenavnet ditt. Kontakt Crew for hjelp.",
         "dry-run": "Kontrollen er fullført i testmodus. Ingen navn eller roller er endret.",
-        verified: "Kallenavnet er oppdatert, og du har tilgang til serveren."
+        verified: "Kallenavnet er oppdatert, og du har tilgang til serveren.",
+        "manual-override": "Crew har gitt deg tilgang manuelt med kallenavnet som ble valgt."
       };
       await interaction.editReply(messages[result]);
     } catch {

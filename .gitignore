@@ -5,4 +5,10 @@ data/access-permissions-backup.json
 data/access-permissions-backup.json.tmp
 data/voice-owners.json
 data/voice-owners.json.tmp
+data/cs-webhook-events.json
+data/cs-webhook-events.json.tmp
+data/cs-owned-voice-channels.json
+data/cs-owned-voice-channels.json.tmp
+data/manual-access-overrides.json
+data/manual-access-overrides.json.tmp
 npm-debug.log*
