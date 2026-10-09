@@ -119,12 +119,16 @@ test("dry-run runtime reports aggregate plans without Discord mutations", async 
   };
   const mat = {
     getTeams: async () => teams,
+    getTournaments: async () => [
+      { id: 10, type: "single_elimination", status: "active", teamSize: 5 },
+      { id: 11, type: "shuffle", status: "active", teamSize: 2 }
+    ],
     getBracketSummary: async (id: number) => id === 10 ? mainBracket : wingmanBracket
   } as unknown as MatClient;
   let report: unknown;
   const runtime = new CsSyncRuntime(mat, {
     getParticipants: async () => participantsFixture
-  }, 10, 11, 30_000, summary => { report = summary; });
+  }, 30_000, summary => { report = summary; });
 
   const result = await runtime.runOnce();
   assert.deepEqual(result, {
@@ -134,7 +138,9 @@ test("dry-run runtime reports aggregate plans without Discord mutations", async 
     wingmanPairRoomCount: 1,
     wingmanSkippedPairCount: 0,
     unmatchedParticipantCount: 0,
-    ambiguousSteamIdCount: 0
+    ambiguousSteamIdCount: 0,
+    ambiguousMainTournamentCount: 0,
+    ambiguousWingmanTournamentCount: 0
   });
   assert.deepEqual(report, result);
 });

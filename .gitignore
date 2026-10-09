@@ -1,6 +1,8 @@
 node_modules/
 dist/
 .env
+.env2
+.env.2
 data/access-permissions-backup.json
 data/access-permissions-backup.json.tmp
 data/voice-owners.json

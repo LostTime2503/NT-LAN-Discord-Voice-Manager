@@ -26,16 +26,6 @@ function readOptionalPositiveInteger(name: string, fallback: number): number {
   return value;
 }
 
-function readOptionalPositiveIntegerValue(name: string): number | undefined {
-  const rawValue = process.env[name];
-  if (!rawValue) return undefined;
-  const value = Number(rawValue);
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new Error(`Environment variable ${name} must be a positive integer.`);
-  }
-  return value;
-}
-
 function readOptionalBoolean(name: string, fallback: boolean): boolean {
   const value = process.env[name];
   if (!value) return fallback;
@@ -57,8 +47,6 @@ export const config = {
   csRoleSyncEnabled: readOptionalBoolean("CS_ROLE_SYNC_ENABLED", false),
   csRoleSyncDryRun: readOptionalBoolean("CS_ROLE_SYNC_DRY_RUN", true),
   csSyncIntervalMs: readOptionalPositiveInteger("CS_SYNC_INTERVAL_MS", 300_000),
-  csMainTournamentId: readOptionalPositiveIntegerValue("CS_MAIN_TOURNAMENT_ID"),
-  csWingmanTournamentId: readOptionalPositiveIntegerValue("CS_WINGMAN_TOURNAMENT_ID"),
   csWebhookPort: readOptionalPositiveInteger("CS_WEBHOOK_PORT", 8787),
   matWebhookSecret: process.env.MAT_WEBHOOK_SECRET,
   crewLogChannelId: process.env.CREW_LOG_CHANNEL_ID,

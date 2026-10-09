@@ -46,8 +46,7 @@ export class DiscordJsCsVoiceAdapter implements CsDiscordAdapter {
     private readonly lobbyChannelId: string,
     private readonly participantRoleId: string,
     private readonly manualParticipantRoleId: string | undefined,
-    private readonly crewRoleId: string,
-    private readonly deleteDelayMs: number
+    private readonly crewRoleId: string
   ) {}
 
   async validate(): Promise<void> {
@@ -197,6 +196,20 @@ export class DiscordJsCsVoiceAdapter implements CsDiscordAdapter {
     return true;
   }
 
+  async canRouteMemberFromLobby(memberId: string, lobbyChannelId: string): Promise<boolean> {
+    const guild = await this.client.guilds.fetch(this.guildId);
+    let member;
+    try {
+      member = await guild.members.fetch(memberId);
+    } catch {
+      return false;
+    }
+    return !member.user.bot && member.voice.channelId === lobbyChannelId
+      && (member.roles.cache.has(this.participantRoleId)
+        || Boolean(this.manualParticipantRoleId && member.roles.cache.has(this.manualParticipantRoleId))
+        || member.roles.cache.has(this.crewRoleId));
+  }
+
   async setParticipantRole(memberId: string, shouldHaveRole: boolean): Promise<boolean> {
     const guild = await this.client.guilds.fetch(this.guildId);
     let member;
@@ -241,31 +254,6 @@ export class DiscordJsCsVoiceAdapter implements CsDiscordAdapter {
         await member.voice.setChannel(lobby, "CS tournament enrollment ended");
       }
     }
-  }
-
-  deleteRoomWhenEmpty(channelId: string, delayMs: number, onDeleted: () => void): void {
-    setTimeout(() => {
-      void this.deleteWhenEmpty(channelId, delayMs, onDeleted).catch(() => {
-        console.error("CS room cleanup failed; retrying later.");
-        this.deleteRoomWhenEmpty(channelId, delayMs, onDeleted);
-      });
-    }, delayMs).unref();
-  }
-
-  private async deleteWhenEmpty(channelId: string, delayMs: number, onDeleted: () => void): Promise<void> {
-    const guild = await this.client.guilds.fetch(this.guildId);
-    const channel = await guild.channels.fetch(channelId);
-    if (!channel || channel.type !== ChannelType.GuildVoice || channel.parentId !== this.categoryId
-      || !/^\[MAT-[a-f0-9]{12}\] /.test(channel.name)) {
-      onDeleted();
-      return;
-    }
-    if (channel.members.size > 0) {
-      this.deleteRoomWhenEmpty(channelId, delayMs, onDeleted);
-      return;
-    }
-    await channel.delete("Completed MAT-owned Wingman room is empty.");
-    onDeleted();
   }
 
   private roomMarker(request: CsVoiceRoomRequest): string {

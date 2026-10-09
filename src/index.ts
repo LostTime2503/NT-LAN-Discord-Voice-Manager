@@ -291,8 +291,7 @@ async function startCsParticipantRoleSync(enabled = config.csRoleSyncEnabled, li
       config.csLobbyChannelId ?? "",
       config.csParticipantRoleId,
       config.manualCsParticipantRoleId,
-      config.crewRoleId,
-      config.emptyChannelDeleteDelayMs
+      config.crewRoleId
     );
     await manualOverrideStore.load();
     await adapter.validateParticipantRoleManagement();
@@ -340,13 +339,11 @@ async function startCsVoiceSync(enabled = config.csVoiceSyncEnabled, live = !con
     config.csLobbyChannelId,
     config.csParticipantRoleId,
     config.manualCsParticipantRoleId,
-    config.crewRoleId,
-    config.csMainTournamentId,
-    config.csWingmanTournamentId
+    config.crewRoleId
   ].every(Boolean);
   if (!discordConfigured || !config.matWebhookSecret || !config.matUrl
     || !config.matApiToken || !registrationConfigured) {
-    throw new Error("CS-kategori, lobby, begge roller, turnerings-ID-er, MAT API/token, webhook-secret og Registration API må være konfigurert.");
+    throw new Error("CS-kategori, lobby, begge roller, MAT API/token, webhook-secret og Registration API må være konfigurert.");
   }
 
   let registration: RegistrationClient | undefined;
@@ -381,8 +378,7 @@ async function startCsVoiceSync(enabled = config.csVoiceSyncEnabled, live = !con
           config.csLobbyChannelId!,
           config.csParticipantRoleId!,
           config.manualCsParticipantRoleId,
-          config.crewRoleId!,
-          config.emptyChannelDeleteDelayMs
+          config.crewRoleId!
         );
         if (live) await adapter.validate();
         csDiscordManager = new CsDiscordManager(
@@ -397,8 +393,6 @@ async function startCsVoiceSync(enabled = config.csVoiceSyncEnabled, live = !con
         secret: config.matWebhookSecret,
         port: config.csWebhookPort,
         intervalMs: config.csSyncIntervalMs,
-        mainTournamentId: config.csMainTournamentId,
-        wingmanTournamentId: config.csWingmanTournamentId,
         mat,
         registration: csRegistration,
         dryRun: !live,
@@ -425,15 +419,12 @@ async function startCsVoiceSync(enabled = config.csVoiceSyncEnabled, live = !con
     throw new Error("CS MAT webhook trenger MAT_WEBHOOK_SECRET og Registration API.");
   }
 
-  if (enabled && !live && config.matUrl && config.matApiToken
-    && config.csMainTournamentId && config.csWingmanTournamentId && registration && csRegistration) {
+  if (enabled && !live && config.matUrl && config.matApiToken && registration && csRegistration) {
     try {
       const mat = new MatClient({ baseUrl: config.matUrl, apiToken: config.matApiToken });
       csSyncRuntime = new CsSyncRuntime(
         mat,
         csRegistration,
-        config.csMainTournamentId,
-        config.csWingmanTournamentId,
         config.csSyncIntervalMs,
         summary => {
           console.log("CS sync preview", summary);

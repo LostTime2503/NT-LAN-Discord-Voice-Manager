@@ -7,10 +7,11 @@ import { manualOverrideStore } from "../manualOverrides.js";
 import { RegistrationClient } from "../registrationClient.js";
 import { getBotSettingsController } from "../botSettingsController.js";
 import { getBotText } from "../messages.js";
+import { discoverActiveCsTournaments } from "../csTournamentDiscovery.js";
 
 interface StatusLine {
   label: string;
-  result: "OK" | "MANGLER" | "FEIL" | "DRY-RUN";
+  result: "OK" | "MANGLER" | "FEIL" | "DRY-RUN" | "TVETYDIG";
   detail: string;
 }
 
@@ -57,7 +58,6 @@ export const csStatusCommand = {
       config.registrationClientId, config.registrationClientSecret].every(Boolean);
     const discordConfigured = [config.csCategoryId, config.csLobbyChannelId, config.csParticipantRoleId,
       config.manualCsParticipantRoleId, config.crewRoleId].every(Boolean);
-    const tournamentsConfigured = Boolean(config.csMainTournamentId && config.csWingmanTournamentId);
 
     lines.push({
       label: getBotText("csStatus.label.voice"),
@@ -72,8 +72,6 @@ export const csStatusCommand = {
     lines.push({ label: getBotText("csStatus.label.webhookSecret"), result: getBotText(webhookConfigured ? "csStatus.result.ok" : "csStatus.result.missing") as StatusLine["result"], detail: getBotText(webhookConfigured ? "csStatus.detail.configured" : "csStatus.detail.webhookMissing") });
     lines.push({ label: getBotText("csStatus.label.registration"), result: getBotText(registrationConfigured ? "csStatus.result.ok" : "csStatus.result.missing") as StatusLine["result"], detail: getBotText(registrationConfigured ? "csStatus.detail.registrationConfigured" : "csStatus.detail.registrationMissing") });
     lines.push({ label: getBotText("csStatus.label.discord"), result: getBotText(discordConfigured ? "csStatus.result.ok" : "csStatus.result.missing") as StatusLine["result"], detail: getBotText(discordConfigured ? "csStatus.detail.discordConfigured" : "csStatus.detail.discordMissing") });
-    lines.push({ label: getBotText("csStatus.label.tournamentIds"), result: getBotText(tournamentsConfigured ? "csStatus.result.ok" : "csStatus.result.missing") as StatusLine["result"], detail: getBotText(tournamentsConfigured ? "csStatus.detail.tournamentIdsConfigured" : "csStatus.detail.tournamentIdsMissing") });
-
     if (webhookConfigured) {
       try {
         const response = await fetch(`http://127.0.0.1:${config.csWebhookPort}/healthz`, {
@@ -95,8 +93,7 @@ export const csStatusCommand = {
           config.csLobbyChannelId!,
           config.csParticipantRoleId!,
           config.manualCsParticipantRoleId!,
-          config.crewRoleId!,
-          config.emptyChannelDeleteDelayMs
+          config.crewRoleId!
         );
         await adapter.validate();
         lines.push({ label: getBotText("csStatus.label.discord"), result: getBotText("csStatus.result.ok") as StatusLine["result"], detail: getBotText("csStatus.detail.permissionsValid") });
@@ -110,22 +107,24 @@ export const csStatusCommand = {
       try {
         const mat = new MatClient({ baseUrl: config.matUrl!, apiToken: config.matApiToken });
         const tournaments = await mat.getTournaments();
-        const main = tournaments.find(tournament => tournament.id === config.csMainTournamentId);
-        const wingman = tournaments.find(tournament => tournament.id === config.csWingmanTournamentId);
+        const discovery = discoverActiveCsTournaments(tournaments);
+        const main = discovery.main
+          ? getBotText("csStatus.detail.tournamentCandidate", { id: discovery.main.id, type: discovery.main.type, status: discovery.main.status, size: discovery.main.teamSize })
+          : discovery.ambiguousMain
+            ? getBotText("csStatus.detail.tournamentAmbiguous", { count: discovery.ambiguousMain + 1 })
+            : getBotText("csStatus.detail.noActiveTournament");
+        const wingman = discovery.wingman
+          ? getBotText("csStatus.detail.tournamentCandidate", { id: discovery.wingman.id, type: discovery.wingman.type, status: discovery.wingman.status, size: discovery.wingman.teamSize })
+          : discovery.ambiguousWingman
+            ? getBotText("csStatus.detail.tournamentAmbiguous", { count: discovery.ambiguousWingman + 1 })
+            : getBotText("csStatus.detail.noActiveTournament");
+        const ambiguous = discovery.ambiguousMain > 0 || discovery.ambiguousWingman > 0;
+        const found = Boolean(discovery.main || discovery.wingman);
         lines.push({
           label: getBotText("csStatus.label.tournaments"),
-          result: getBotText(main && wingman ? "csStatus.result.ok" : "csStatus.result.error") as StatusLine["result"],
-          detail: getBotText("csStatus.detail.tournaments", {
-            main: main ? `${main.type}/${main.status}/size ${main.teamSize}` : getBotText("csStatus.detail.tournamentNotFound"),
-            wingman: wingman ? `${wingman.type}/${wingman.status}/size ${wingman.teamSize}` : getBotText("csStatus.detail.tournamentNotFound")
-          })
+          result: getBotText(found ? "csStatus.result.ok" : ambiguous ? "csStatus.result.ambiguous" : "csStatus.result.missing") as StatusLine["result"],
+          detail: getBotText("csStatus.detail.tournaments", { main, wingman })
         });
-        if (main && (main.type === "shuffle" || main.teamSize !== 5)) {
-          lines.push({ label: getBotText("csStatus.label.mainFormat"), result: getBotText("csStatus.result.error") as StatusLine["result"], detail: getBotText("csStatus.detail.mainFormatMismatch", { type: main.type, size: main.teamSize }) });
-        }
-        if (wingman && (wingman.type !== "shuffle" || wingman.teamSize !== 2)) {
-          lines.push({ label: getBotText("csStatus.label.wingmanFormat"), result: getBotText("csStatus.result.error") as StatusLine["result"], detail: getBotText("csStatus.detail.wingmanFormatMismatch", { type: wingman.type, size: wingman.teamSize }) });
-        }
       } catch {
         lines.push({ label: getBotText("csStatus.label.matApi"), result: getBotText("csStatus.result.error") as StatusLine["result"], detail: getBotText("csStatus.detail.matApiFailed") });
       }

@@ -60,6 +60,10 @@ class FakeDiscordAdapter implements CsDiscordAdapter {
   private readonly channelIds = new Map<string, string>();
   private wingmanChannelSequence = 0;
 
+  async canRouteMemberFromLobby(memberId: string, lobbyChannelId: string): Promise<boolean> {
+    return this.memberChannels.get(memberId) === lobbyChannelId;
+  }
+
   async ensureRoom(request: CsVoiceRoomRequest, existingChannelId?: string): Promise<string> {
     this.ensured.push(request);
     const existing = existingChannelId ?? this.channelIds.get(request.key);
@@ -117,7 +121,7 @@ test("dry-run plans rooms but never calls Discord adapter", async () => {
   }
 });
 
-test("live ready ensures stable main team rooms and lobby routing survives restart", async () => {
+test("match-ready stores team assignments and creates only the joining member's room", async () => {
   const directory = await mkdtemp(join(tmpdir(), "cs-discord-manager-"));
   const path = join(directory, "rooms.json");
   const adapter = new FakeDiscordAdapter();
@@ -126,26 +130,32 @@ test("live ready ensures stable main team rooms and lobby routing survives resta
     await manager.load();
     adapter.memberChannels.set(discordOne, "111111111111111111");
     const summary = await manager.handleMatchEvent(matchEvent("match.ready"), "main", participants, false);
-    assert.equal(summary.updatedRooms, 2);
-    assert.deepEqual(adapter.ensured.map(room => room.key), ["main:3:team-one", "main:3:team-two"]);
+    assert.equal(summary.plannedRooms, 2);
+    assert.equal(summary.updatedRooms, 0);
+    assert.equal(adapter.ensured.length, 0);
+    assert.deepEqual((await manager.getAssignments()).map(request => request.key), ["main:3:team-one", "main:3:team-two"]);
+    assert.equal(await manager.getRooms().then(rooms => rooms.length), 0);
+
+    assert.equal(await manager.handleVoiceStateUpdate(voiceState("111111111111111111", discordOne)), true);
+    assert.deepEqual(adapter.ensured.map(room => room.key), ["main:3:team-one"]);
     assert.deepEqual(adapter.moved, [{ memberId: discordOne, channelId: "222222222222222222" }]);
 
     const restarted = new CsDiscordManager(adapter, "111111111111111111", 5_000, path, false);
     await restarted.load();
     adapter.memberChannels.set(discordTwo, "111111111111111111");
-    assert.equal(await restarted.handleVoiceStateUpdate(voiceState("111111111111111111", discordOne)), false);
     assert.equal(await restarted.handleVoiceStateUpdate(voiceState("111111111111111111", discordTwo)), true);
     assert.deepEqual(adapter.moved, [
       { memberId: discordOne, channelId: "222222222222222222" },
       { memberId: discordTwo, channelId: "333333333333333333" }
     ]);
+    assert.deepEqual(adapter.ensured.map(room => room.key), ["main:3:team-one", "main:3:team-two"]);
     assert.equal(await restarted.handleVoiceStateUpdate(voiceState("111111111111111111", "123456789012345680")), false);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
 });
 
-test("duplicate competition assignments fail closed and Wingman terminal event retires only pair rooms", async () => {
+test("duplicate active assignments fail closed; terminal Wingman events clear routing without Discord mutations", async () => {
   const directory = await mkdtemp(join(tmpdir(), "cs-discord-manager-"));
   const path = join(directory, "rooms.json");
   const adapter = new FakeDiscordAdapter();
@@ -159,25 +169,19 @@ test("duplicate competition assignments fail closed and Wingman terminal event r
       participants,
       false
     );
+    adapter.memberChannels.set(discordOne, "111111111111111111");
     assert.equal(await manager.handleVoiceStateUpdate(voiceState("111111111111111111", discordOne)), false);
+    assert.equal(adapter.ensured.length, 0);
     await manager.handleMatchEvent(matchEvent("match.finished", "4", "wingman-match"), "wingman", participants, false);
-    assert.equal(adapter.deleteRequests.length, 2);
-    assert.equal(adapter.deleteRequests.every(request => request.delayMs === 5_000), true);
-    assert.deepEqual((await manager.getRooms()).map(room => [room.scope, room.retiring]), [
-      ["main", undefined], ["main", undefined], ["wingman", true], ["wingman", true]
-    ]);
-    const restarted = new CsDiscordManager(adapter, "111111111111111111", 5_000, path);
-    await restarted.load();
-    assert.equal(adapter.deleteRequests.length, 4);
-    adapter.deleteRequests.slice(-2).forEach(request => request.onDeleted());
-    await new Promise(resolve => setImmediate(resolve));
-    assert.deepEqual((await restarted.getRooms()).map(room => room.scope), ["main", "main"]);
+    assert.equal(adapter.deleteRequests.length, 0);
+    assert.equal(await manager.handleVoiceStateUpdate(voiceState("111111111111111111", discordOne)), true);
+    assert.deepEqual(adapter.ensured.map(room => room.key), ["main:3:team-one"]);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
 });
 
-test("new Wingman pairing moves members out of their previous bot rooms", async () => {
+test("new Wingman pairing replaces pending assignments and routes only members who enter the lobby", async () => {
   const directory = await mkdtemp(join(tmpdir(), "cs-discord-manager-"));
   const adapter = new FakeDiscordAdapter();
   const manager = new CsDiscordManager(adapter, "111111111111111111", 5_000, join(directory, "rooms.json"), false);
@@ -192,8 +196,8 @@ test("new Wingman pairing moves members out of their previous bot rooms", async 
       participants,
       false
     );
-    const firstPairRooms = (await manager.getRooms()).filter(room => room.scope === "wingman");
-    assert.equal(firstPairRooms.length, 2);
+    assert.equal(adapter.ensured.length, 0);
+    assert.equal((await manager.getAssignments()).filter(request => request.scope === "wingman").length, 2);
 
     await manager.handleMatchEvent(
       matchEvent("match.ready", "4", "wingman-round-2", [steamOne, steamThree], [steamTwo, steamFour]),
@@ -201,24 +205,24 @@ test("new Wingman pairing moves members out of their previous bot rooms", async 
       participants,
       false
     );
-    const rooms = (await manager.getRooms()).filter(room => room.scope === "wingman");
-    const activeRooms = rooms.filter(room => !room.retiring);
-    const nextTeamOne = activeRooms.find(room => room.teamId === "team-one");
-    const nextTeamTwo = activeRooms.find(room => room.teamId === "team-two");
-    assert.ok(nextTeamOne);
-    assert.ok(nextTeamTwo);
-    assert.equal(adapter.memberChannels.get(discordOne), nextTeamOne.channelId);
-    assert.equal(adapter.memberChannels.get(discordThree), nextTeamOne.channelId);
-    assert.equal(adapter.memberChannels.get(discordTwo), nextTeamTwo.channelId);
-    assert.equal(adapter.memberChannels.get(discordFour), nextTeamTwo.channelId);
-    assert.equal(rooms.filter(room => room.retiring).length, 2);
-    assert.equal(adapter.deleteRequests.length, 2);
+    const assignments = await manager.getAssignments();
+    assert.equal(assignments.filter(request => request.scope === "wingman").length, 2);
+    assert.deepEqual(adapter.ensured, []);
+
+    adapter.memberChannels.set(discordOne, "111111111111111111");
+    const routed = await manager.handleVoiceStateUpdate(voiceState("111111111111111111", discordOne));
+    assert.equal(routed, true);
+    assert.equal(adapter.ensured.length, 1);
+    assert.equal(adapter.ensured[0]?.matchSlug, "wingman-round-2");
+    assert.equal(adapter.moved.length, 1);
+    assert.equal(adapter.moved[0]?.memberId, discordOne);
+    assert.equal(adapter.deleteRequests.length, 0);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
 });
 
-test("Wingman GET recovery restores an active pairing and retires rooms when no match is active", async () => {
+test("Wingman GET recovery restores an active assignment without Discord writes", async () => {
   const directory = await mkdtemp(join(tmpdir(), "cs-discord-manager-"));
   const adapter = new FakeDiscordAdapter();
   const manager = new CsDiscordManager(adapter, "111111111111111111", 5_000, join(directory, "rooms.json"), false);
@@ -235,9 +239,12 @@ test("Wingman GET recovery restores an active pairing and retires rooms when no 
     await manager.load();
     const recovered = await manager.reconcileWingmanSnapshot("4", snapshot, participants, false);
     assert.equal(recovered.plannedRooms, 2);
-    assert.deepEqual((await manager.getRooms()).map(room => room.matchSlug), ["active-wingman", "active-wingman"]);
+    assert.deepEqual((await manager.getAssignments()).map(request => request.matchSlug), ["active-wingman", "active-wingman"]);
+    assert.equal(adapter.ensured.length, 0);
+    assert.equal((await manager.getRooms()).length, 0);
     await manager.reconcileWingmanSnapshot("4", null, participants, false);
-    assert.equal(adapter.deleteRequests.length, 2);
+    assert.equal(adapter.deleteRequests.length, 0);
+    assert.equal((await manager.getAssignments()).length, 0);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -266,7 +273,7 @@ test("CS team rooms allow both CS participant roles, Crew, bot, and mapped membe
   assert.deepEqual(overwrites.slice(5).map(overwrite => overwrite.id), [discordOne, discordTwo]);
 });
 
-test("main bracket snapshot prepares every known team room before a match is ready", async () => {
+test("main bracket snapshot stores every known team assignment without creating rooms", async () => {
   const directory = await mkdtemp(join(tmpdir(), "cs-discord-manager-"));
   const adapter = new FakeDiscordAdapter();
   const manager = new CsDiscordManager(adapter, "111111111111111111", 5_000, join(directory, "rooms.json"), false);
@@ -282,8 +289,8 @@ test("main bracket snapshot prepares every known team room before a match is rea
       { id: "team-two", name: "Team Two", tag: "TWO", players: [{ steamId: steamTwo }] }
     ], participants, false);
     assert.equal(summary.plannedRooms, 2);
-    assert.equal(adapter.ensured.length, 2);
-    assert.deepEqual(adapter.ensured.map(room => room.key), ["main:3:team-one", "main:3:team-two"]);
+    assert.equal(adapter.ensured.length, 0);
+    assert.deepEqual((await manager.getAssignments()).map(request => request.key), ["main:3:team-one", "main:3:team-two"]);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -321,6 +328,8 @@ test("explicit tournament opt-out removes CS role and managed room access only",
   try {
     await manager.load();
     await manager.handleMatchEvent(matchEvent("match.ready"), "main", participants, false);
+    adapter.memberChannels.set(discordOne, "111111111111111111");
+    assert.equal(await manager.handleVoiceStateUpdate(voiceState("111111111111111111", discordOne)), true);
     const roleSummary = await manager.reconcileParticipantRoles(new Map([
       [discordOne, { ...participants.get(discordOne)!, tournaments: [] }],
       [discordTwo, { ...participants.get(discordTwo)!, tournaments: ["cs2"] }],
@@ -331,6 +340,7 @@ test("explicit tournament opt-out removes CS role and managed room access only",
     assert.equal(roleSummary.granted, 1);
     assert.equal(roleSummary.preservedMissingData, 1);
     assert.deepEqual(adapter.accessRevocations, [{ channelId: "222222222222222222", memberId: discordOne }]);
+    assert.equal((await manager.getAssignments()).some(request => request.memberIds.includes(discordOne)), false);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -344,19 +354,24 @@ test("manually changed MAT rooms are locked and skipped by later reconciliation"
     const manager = new CsDiscordManager(adapter, "111111111111111111", 5_000, path, false);
     await manager.load();
     adapter.memberChannels.set(discordOne, "111111111111111111");
-    adapter.memberChannels.set(discordTwo, "111111111111111111");
-    await manager.handleMatchEvent(matchEvent("match.ready"), "main", participants, false);
-    adapter.moved.length = 0;
+    await manager.handleMatchEvent(
+      matchEvent("match.ready", "3", "main-match", [steamOne, steamTwo], [steamThree, steamFour]),
+      "main",
+      participants,
+      false
+    );
+    assert.equal(await manager.handleVoiceStateUpdate(voiceState("111111111111111111", discordOne)), true);
     adapter.driftTeamId = "team-one";
-    const drifted = await manager.handleMatchEvent(matchEvent("match.ready"), "main", participants, false);
-    assert.equal(drifted.updatedRooms, 0);
-    assert.equal(adapter.moved.some(move => move.memberId === discordOne), false);
+    adapter.memberChannels.set(discordTwo, "111111111111111111");
+    assert.equal(await manager.handleVoiceStateUpdate(voiceState("111111111111111111", discordTwo)), false);
+    assert.equal(adapter.moved.some(move => move.memberId === discordTwo), false);
     assert.equal((await manager.getRooms()).find(room => room.teamId === "team-one")?.manualOverride, true);
 
     const restarted = new CsDiscordManager(adapter, "111111111111111111", 5_000, path, false);
     await restarted.load();
     const ensureCallsBefore = adapter.ensured.filter(room => room.teamId === "team-one").length;
-    await restarted.handleMatchEvent(matchEvent("match.ready"), "main", participants, false);
+    adapter.memberChannels.set(discordOne, "111111111111111111");
+    assert.equal(await restarted.handleVoiceStateUpdate(voiceState("111111111111111111", discordOne)), false);
     assert.equal(adapter.ensured.filter(room => room.teamId === "team-one").length, ensureCallsBefore);
     assert.equal((await restarted.getRooms()).find(room => room.teamId === "team-one")?.manualOverride, true);
   } finally {

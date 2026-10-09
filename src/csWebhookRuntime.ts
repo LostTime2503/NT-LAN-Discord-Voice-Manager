@@ -3,6 +3,7 @@ import type { MatWebhookEvent } from "./csWebhookServer.js";
 import { CsEventStore } from "./csEventStore.js";
 import type { MatBracketSummary, MatClient, MatMatchSnapshot, MatTeam } from "./matClient.js";
 import { planCsTeamRooms } from "./csTournamentSync.js";
+import { classifyCsTournament, discoverActiveCsTournaments } from "./csTournamentDiscovery.js";
 import type { CsRegistrationSource } from "./csSyncRuntime.js";
 import type { RegisteredPerson } from "./registrationClient.js";
 import type { AddressInfo } from "node:net";
@@ -24,8 +25,6 @@ export interface CsWebhookRuntimeOptions {
   host?: string;
   intervalMs: number;
   mat?: MatClient;
-  mainTournamentId?: number;
-  wingmanTournamentId?: number;
   dryRun?: boolean;
   registration: CsRegistrationSource;
   discordManager?: CsDiscordManager;
@@ -75,6 +74,9 @@ export class CsWebhookRuntime {
   private receiver: ReturnType<typeof createMatWebhookReceiver> | undefined;
   private retryTimer: NodeJS.Timeout | undefined;
   private processing = false;
+  private readonly tournamentScopes = new Map<string, "main" | "wingman">();
+  private activeMainTournamentId: number | undefined;
+  private activeWingmanTournamentId: number | undefined;
 
   constructor(private readonly options: CsWebhookRuntimeOptions) {
     this.store = options.store ?? new CsEventStore();
@@ -88,53 +90,54 @@ export class CsWebhookRuntime {
 
   async start(): Promise<void> {
     if (this.receiver) return;
-    if (this.options.mainTournamentId && this.options.mainTournamentId === this.options.wingmanTournamentId) {
-      throw new Error("Main and Wingman tournament IDs must be different.");
-    }
     await this.store.load();
     await this.options.discordManager?.load();
-    if (this.options.discordManager && this.options.mat && this.options.mainTournamentId && this.options.wingmanTournamentId) {
+    if (this.options.mat) await this.refreshTournamentDiscovery();
+    if (this.options.discordManager && this.options.mat
+      && (this.activeMainTournamentId || this.activeWingmanTournamentId)) {
       try {
-        const [mainBracket, wingmanBracket, teams, participants] = await Promise.all([
-          this.options.mat.getBracketSummary(this.options.mainTournamentId),
-          this.options.mat.getBracketSummary(this.options.wingmanTournamentId),
-          this.options.mat.getTeams(),
-          this.getCsParticipants()
-        ]);
-        const mainSummary = await this.options.discordManager.reconcileMainTournamentRooms(
-          String(this.options.mainTournamentId), mainBracket, teams, participants, this.options.dryRun ?? true
-        );
-        console.log("CS main startup recovery", {
-          plannedRooms: mainSummary.plannedRooms,
-          updatedRooms: mainSummary.updatedRooms,
-          skippedTeams: mainSummary.skippedTeams,
-          unmatchedPlayers: mainSummary.unmatchedPlayers,
-          ambiguousSteamIds: mainSummary.ambiguousSteamIds
-        });
-        const activeSlugs = selectRecoverableWingmanMatches(wingmanBracket);
-        if (activeSlugs === null) {
-          console.error("Wingman startup recovery skipped; tournament format or active match state is ambiguous.");
-        } else if (activeSlugs.length === 1) {
-          const match = await this.options.mat.getMatch(activeSlugs[0]!);
-          if (match.tournamentId !== String(this.options.wingmanTournamentId)) {
-            console.error("Wingman startup recovery skipped; active match belongs to another tournament.");
+        const teams = await this.options.mat.getTeams();
+        const participants = await this.getCsParticipants();
+        if (this.activeMainTournamentId) {
+          const mainBracket = await this.options.mat.getBracketSummary(this.activeMainTournamentId);
+          const mainSummary = await this.options.discordManager.reconcileMainTournamentRooms(
+            String(this.activeMainTournamentId), mainBracket, teams, participants, this.options.dryRun ?? true
+          );
+          console.log("CS main startup recovery", {
+            plannedRooms: mainSummary.plannedRooms,
+            updatedRooms: mainSummary.updatedRooms,
+            skippedTeams: mainSummary.skippedTeams,
+            unmatchedPlayers: mainSummary.unmatchedPlayers,
+            ambiguousSteamIds: mainSummary.ambiguousSteamIds
+          });
+        }
+        if (this.activeWingmanTournamentId) {
+          const wingmanBracket = await this.options.mat.getBracketSummary(this.activeWingmanTournamentId);
+          const activeSlugs = selectRecoverableWingmanMatches(wingmanBracket);
+          if (activeSlugs === null) {
+            console.error("Wingman startup recovery skipped; active match state is ambiguous.");
+          } else if (activeSlugs.length === 1) {
+            const match = await this.options.mat.getMatch(activeSlugs[0]!);
+            if (match.tournamentId !== String(this.activeWingmanTournamentId)) {
+              console.error("Wingman startup recovery skipped; active match belongs to another tournament.");
+            } else {
+              const summary = await this.options.discordManager.reconcileWingmanSnapshot(
+                String(this.activeWingmanTournamentId), match, participants, this.options.dryRun ?? true
+              );
+              console.log("CS Wingman startup recovery", {
+                activeMatchCount: 1,
+                plannedRooms: summary.plannedRooms,
+                skippedPairs: summary.skippedTeams,
+                unmatchedPlayers: summary.unmatchedPlayers,
+                ambiguousSteamIds: summary.ambiguousSteamIds
+              });
+            }
           } else {
             const summary = await this.options.discordManager.reconcileWingmanSnapshot(
-              String(this.options.wingmanTournamentId), match, participants, this.options.dryRun ?? true
+              String(this.activeWingmanTournamentId), null, participants, this.options.dryRun ?? true
             );
-            console.log("CS Wingman startup recovery", {
-              activeMatchCount: 1,
-              plannedRooms: summary.plannedRooms,
-              skippedPairs: summary.skippedTeams,
-              unmatchedPlayers: summary.unmatchedPlayers,
-              ambiguousSteamIds: summary.ambiguousSteamIds
-            });
+            console.log("CS Wingman startup recovery", { activeMatchCount: 0, plannedRooms: summary.plannedRooms });
           }
-        } else {
-          const summary = await this.options.discordManager.reconcileWingmanSnapshot(
-            String(this.options.wingmanTournamentId), null, participants, this.options.dryRun ?? true
-          );
-          console.log("CS Wingman startup recovery", { activeMatchCount: 0, plannedRooms: summary.plannedRooms });
         }
       } catch {
         console.error("CS startup recovery failed; existing room assignments were preserved and webhook events can still update them.");
@@ -143,7 +146,7 @@ export class CsWebhookRuntime {
     const receiver = createMatWebhookReceiver({
       secret: this.options.secret,
       onEvent: async event => {
-        if (!this.tournamentFor(event)) return;
+        if (!await this.tournamentFor(event)) return;
         const result = await this.store.accept(event);
         if (result === "accepted") void this.processPending();
       }
@@ -176,9 +179,8 @@ export class CsWebhookRuntime {
     this.processing = true;
     try {
       for (const event of await this.store.getPending()) {
-        const tournament = this.tournamentFor(event);
+        const tournament = await this.tournamentFor(event);
         if (!tournament) {
-          if (!this.options.mainTournamentId || !this.options.wingmanTournamentId) return;
           await this.store.markProcessed(event.id);
           continue;
         }
@@ -197,10 +199,36 @@ export class CsWebhookRuntime {
     }
   }
 
-  private tournamentFor(event: MatWebhookEvent): "main" | "wingman" | null {
-    if (this.options.mainTournamentId && event.match.tournamentId === String(this.options.mainTournamentId)) return "main";
-    if (this.options.wingmanTournamentId && event.match.tournamentId === String(this.options.wingmanTournamentId)) return "wingman";
-    return null;
+  private async tournamentFor(event: MatWebhookEvent): Promise<"main" | "wingman" | null> {
+    let scope = this.tournamentScopes.get(event.match.tournamentId);
+    if (!scope && this.options.mat) {
+      await this.refreshTournamentDiscovery();
+      scope = this.tournamentScopes.get(event.match.tournamentId);
+    }
+    return scope ?? null;
+  }
+
+  private async refreshTournamentDiscovery(): Promise<void> {
+    if (!this.options.mat) return;
+    const tournaments = await this.options.mat.getTournaments();
+    const discovery = discoverActiveCsTournaments(tournaments);
+    this.activeMainTournamentId = discovery.main?.id;
+    this.activeWingmanTournamentId = discovery.wingman?.id;
+    const activeByScope = new Map<"main" | "wingman", string[]>();
+    for (const tournament of tournaments) {
+      const scope = classifyCsTournament(tournament);
+      if (!scope) continue;
+      const ids = activeByScope.get(scope) ?? [];
+      ids.push(String(tournament.id));
+      activeByScope.set(scope, ids);
+    }
+    for (const [scope, ids] of activeByScope) {
+      if (ids.length > 1) for (const id of ids) this.tournamentScopes.delete(id);
+      else if (ids.length === 1) this.tournamentScopes.set(ids[0]!, scope);
+    }
+    if (discovery.ambiguousMain || discovery.ambiguousWingman) {
+      console.warn("MAT active tournament discovery is ambiguous; ambiguous tournament events are ignored.");
+    }
   }
 
   private async getCsParticipants(): Promise<Map<string, RegisteredPerson>> {

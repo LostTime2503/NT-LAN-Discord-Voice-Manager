@@ -11,7 +11,7 @@ import {
   toRecoveredWingmanEvent,
   type CsWebhookDryRunReport
 } from "../src/csWebhookRuntime.js";
-import type { MatBracketSummary, MatMatchSnapshot } from "../src/matClient.js";
+import type { MatBracketSummary, MatClient, MatMatchSnapshot } from "../src/matClient.js";
 import type { RegisteredPerson } from "../src/registrationClient.js";
 import { CsDiscordManager, type CsDiscordAdapter } from "../src/csDiscordManager.js";
 
@@ -76,8 +76,12 @@ test("signed match.ready is persisted then produces aggregate dry-run plan only"
     port: 0,
     host: "127.0.0.1",
     intervalMs: 60_000,
-    mainTournamentId: 3,
-    wingmanTournamentId: 4,
+    mat: {
+      getTournaments: async () => [
+        { id: 3, type: "single_elimination", status: "active", teamSize: 5 },
+        { id: 4, type: "shuffle", status: "active", teamSize: 2 }
+      ]
+    } as unknown as MatClient,
     registration: {
       getParticipants: async () => new Map(),
       getCsParticipants: async () => participants
@@ -137,7 +141,7 @@ test("signed match.ready is persisted then produces aggregate dry-run plan only"
   }
 });
 
-test("runtime startup restores only the active Wingman match from bracket and match GETs", async () => {
+test("runtime startup discovers Main/Wingman formats and restores the active Wingman match", async () => {
   const directory = await mkdtemp(join(tmpdir(), "cs-wingman-startup-"));
   const mainBracket: MatBracketSummary = {
     tournament: { id: 3, type: "single_elimination", status: "active", teamSize: 5 },
@@ -159,14 +163,18 @@ test("runtime startup restores only the active Wingman match from bracket and ma
   };
   const discordAdapter: CsDiscordAdapter = {
     ensureRoom: async () => { throw new Error("Dry-run must not create rooms"); },
+    canRouteMemberFromLobby: async () => { throw new Error("Dry-run must not inspect members"); },
     moveMemberFromSources: async () => { throw new Error("Dry-run must not move members"); },
     setParticipantRole: async () => { throw new Error("Dry-run must not change roles"); },
-    revokeMemberFromRoom: async () => { throw new Error("Dry-run must not revoke channel access"); },
-    deleteRoomWhenEmpty: () => { throw new Error("Dry-run must not schedule cleanup"); }
+    revokeMemberFromRoom: async () => { throw new Error("Dry-run must not revoke channel access"); }
   };
   const manager = new CsDiscordManager(discordAdapter, "123456789012345680", 5_000, join(directory, "rooms.json"));
   let fetchedMatchSlug = "";
   const mat = {
+    getTournaments: async () => [
+      { id: 3, type: "single_elimination", status: "active", teamSize: 5 },
+      { id: 4, type: "shuffle", status: "active", teamSize: 2 }
+    ],
     getBracketSummary: async (id: number) => id === 3 ? mainBracket : wingmanBracket,
     getTeams: async () => [],
     getMatch: async (slug: string) => { fetchedMatchSlug = slug; return match; }
@@ -177,8 +185,6 @@ test("runtime startup restores only the active Wingman match from bracket and ma
     host: "127.0.0.1",
     intervalMs: 60_000,
     mat,
-    mainTournamentId: 3,
-    wingmanTournamentId: 4,
     dryRun: true,
     registration: { getParticipants: async () => new Map(), getCsParticipants: async () => new Map() },
     discordManager: manager,

@@ -10,6 +10,7 @@ import { planCsTournamentRooms } from "../csTournamentSync.js";
 import { sendCrewLogMessage } from "../crewLog.js";
 import { consumeCommandPreview, issueCommandPreview } from "../commandPreviews.js";
 import { getBotText } from "../messages.js";
+import { discoverActiveCsTournaments } from "../csTournamentDiscovery.js";
 
 type Competition = "main" | "wingman";
 
@@ -44,8 +45,7 @@ export const makeTeamChatsCommand = {
         return;
       }
       const competition = interaction.options.getString("konkurranse", true) as Competition;
-      const tournamentId = competition === "main" ? config.csMainTournamentId : config.csWingmanTournamentId;
-      if (!tournamentId || !config.matUrl || !config.matApiToken || !config.registrationApiUrl
+      if (!config.matUrl || !config.matApiToken || !config.registrationApiUrl
         || !config.registrationTokenUrl || !config.registrationClientId || !config.registrationClientSecret) {
         await interaction.editReply(getBotText("makeTeamChats.apiNotConfigured"));
         return;
@@ -58,11 +58,21 @@ export const makeTeamChatsCommand = {
         clientId: config.registrationClientId,
         clientSecret: config.registrationClientSecret
       });
-      const [teams, bracket, participants] = await Promise.all([
+      const [teams, tournaments, participants] = await Promise.all([
         mat.getTeams(),
-        mat.getBracketSummary(tournamentId),
+        mat.getTournaments(),
         registration.getCsParticipants().then(value => manualOverrideStore.getCsParticipants(value))
       ]);
+      const discovery = discoverActiveCsTournaments(tournaments);
+      const candidate = competition === "main" ? discovery.main : discovery.wingman;
+      const ambiguityCount = competition === "main" ? discovery.ambiguousMain : discovery.ambiguousWingman;
+      if (!candidate) {
+        await interaction.editReply(getBotText(ambiguityCount > 0
+          ? "makeTeamChats.tournamentAmbiguous" : "makeTeamChats.noActiveTournament"));
+        return;
+      }
+      const tournamentId = candidate.id;
+      const bracket = await mat.getBracketSummary(tournamentId);
       if (bracket.tournament.id !== tournamentId
         || (competition === "main" && bracket.tournament.type === "shuffle")
         || (competition === "wingman" && bracket.tournament.type !== "shuffle")) {
