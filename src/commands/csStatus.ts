@@ -131,6 +131,12 @@ export const csStatusCommand = {
     } else {
       lines.push({ label: getBotText("csStatus.label.matApi"), result: getBotText("csStatus.result.missing") as StatusLine["result"], detail: getBotText("csStatus.detail.matUrlMissing") });
     }
+    const matTokenConfigured = Boolean(config.matApiToken);
+    lines.push({
+      label: getBotText("csStatus.label.matToken"),
+      result: getBotText(matTokenConfigured ? "csStatus.result.ok" : "csStatus.result.missing") as StatusLine["result"],
+      detail: getBotText(matTokenConfigured ? "csStatus.detail.matTokenConfigured" : "csStatus.detail.matTokenMissing")
+    });
 
     if (registrationConfigured) {
       try {

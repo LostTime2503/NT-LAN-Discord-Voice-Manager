@@ -334,16 +334,25 @@ async function startCsVoiceSync(enabled = config.csVoiceSyncEnabled, live = !con
     config.registrationClientId,
     config.registrationClientSecret
   ].every(Boolean);
-  const discordConfigured = [
-    config.csCategoryId,
-    config.csLobbyChannelId,
-    config.csParticipantRoleId,
-    config.manualCsParticipantRoleId,
-    config.crewRoleId
-  ].every(Boolean);
-  if (!discordConfigured || !config.matWebhookSecret || !config.matUrl
-    || !config.matApiToken || !registrationConfigured) {
-    throw new Error("CS-kategori, lobby, begge roller, MAT API/token, webhook-secret og Registration API må være konfigurert.");
+  const requiredCsVoiceSettings: Array<[string, string | undefined]> = [
+    ["CS_CATEGORY_ID", config.csCategoryId],
+    ["CS_LOBBY_CHANNEL_ID", config.csLobbyChannelId],
+    ["CS_PARTICIPANT_ROLE_ID", config.csParticipantRoleId],
+    ["MANUAL_CS_PARTICIPANT_ROLE_ID", config.manualCsParticipantRoleId],
+    ["CREW_ROLE_ID", config.crewRoleId],
+    ["MAT_URL", config.matUrl],
+    ["MAT_API_TOKEN", config.matApiToken],
+    ["MAT_WEBHOOK_SECRET", config.matWebhookSecret],
+    ["REGISTRATION_API_URL", config.registrationApiUrl],
+    ["REGISTRATION_TOKEN_URL", config.registrationTokenUrl],
+    ["REGISTRATION_CLIENT_ID", config.registrationClientId],
+    ["REGISTRATION_CLIENT_SECRET", config.registrationClientSecret]
+  ];
+  const discordConfigured = [config.csCategoryId, config.csLobbyChannelId, config.csParticipantRoleId,
+    config.manualCsParticipantRoleId, config.crewRoleId].every(Boolean);
+  const missingSettings = requiredCsVoiceSettings.filter(([, value]) => !value).map(([name]) => name);
+  if (missingSettings.length || !registrationConfigured) {
+    throw new Error(getBotText("botSettings.csVoiceMissingConfig", { missing: missingSettings.join(", ") }));
   }
 
   let registration: RegistrationClient | undefined;
@@ -410,10 +419,11 @@ async function startCsVoiceSync(enabled = config.csVoiceSyncEnabled, live = !con
       });
       await csWebhookRuntime.start();
       console.log(`CS MAT webhook receiver listening on private container port ${config.csWebhookPort}.`);
-    } catch {
+    } catch (error) {
       csWebhookRuntime = undefined;
       csDiscordManager = undefined;
-      throw new Error("CS MAT webhook kunne ikke starte; ingen nye Discord-endringer ble gjort.");
+      const reason = error instanceof Error ? error.message : "ukjent oppstartsfeil";
+      throw new Error(`CS MAT webhook kunne ikke starte: ${reason}`);
     }
   } else {
     throw new Error("CS MAT webhook trenger MAT_WEBHOOK_SECRET og Registration API.");
