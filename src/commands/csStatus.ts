@@ -5,6 +5,8 @@ import { DiscordJsCsVoiceAdapter } from "../discordCsVoiceAdapter.js";
 import { MatClient } from "../matClient.js";
 import { manualOverrideStore } from "../manualOverrides.js";
 import { RegistrationClient } from "../registrationClient.js";
+import { getBotSettingsController } from "../botSettingsController.js";
+import { getBotText } from "../messages.js";
 
 interface StatusLine {
   label: string;
@@ -13,7 +15,11 @@ interface StatusLine {
 }
 
 export function formatCsStatus(lines: StatusLine[]): string {
-  return ["CS-status", ...lines.map(line => `${line.result} · ${line.label}: ${line.detail}`)].join("\n");
+  return [getBotText("csStatus.title"), ...lines.map(line => getBotText("csStatus.line", {
+    result: line.result,
+    label: line.label,
+    detail: line.detail
+  }))].join("\n");
 }
 
 export const csStatusCommand = {
@@ -24,33 +30,49 @@ export const csStatusCommand = {
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     if (!interaction.guild || interaction.guildId !== config.guildId || !config.crewRoleId) {
-      await interaction.editReply("CS-status er ikke konfigurert for denne serveren.");
+      await interaction.editReply(getBotText("csStatus.notConfigured"));
       return;
     }
     try {
       const actor = await interaction.guild.members.fetch(interaction.user.id);
       if (!isCrewMember(actor, config.crewRoleId)) {
-        await interaction.editReply("Bare Crew og høyere kan se CS-status.");
+        await interaction.editReply(getBotText("csStatus.crewOnly"));
         return;
       }
     } catch {
-      await interaction.editReply("Kunne ikke bekrefte Crew-tilgang for CS-status.");
+      await interaction.editReply(getBotText("csStatus.actorFailed"));
       return;
     }
 
     const lines: StatusLine[] = [];
+    const runtimeSettings = getBotSettingsController()?.getSettings();
+    const liveSettings = getBotSettingsController()?.getLiveSettings();
+    const csVoiceEnabled = runtimeSettings?.csVoice ?? config.csVoiceSyncEnabled;
+    const csRolesEnabled = runtimeSettings?.csRoles ?? config.csRoleSyncEnabled;
+    const csVoiceLive = liveSettings?.csVoice ?? !config.csVoiceSyncDryRun;
+    const csRolesLive = liveSettings?.csRoles ?? !config.csRoleSyncDryRun;
     const matConfigured = Boolean(config.matUrl);
     const webhookConfigured = Boolean(config.matWebhookSecret);
     const registrationConfigured = [config.registrationApiUrl, config.registrationTokenUrl,
       config.registrationClientId, config.registrationClientSecret].every(Boolean);
-    const discordConfigured = [config.csCategoryId, config.csLobbyChannelId, config.csParticipantRoleId, config.crewRoleId].every(Boolean);
+    const discordConfigured = [config.csCategoryId, config.csLobbyChannelId, config.csParticipantRoleId,
+      config.manualCsParticipantRoleId, config.crewRoleId].every(Boolean);
     const tournamentsConfigured = Boolean(config.csMainTournamentId && config.csWingmanTournamentId);
 
-    lines.push({ label: "Discord-modus", result: config.csSyncDryRun ? "DRY-RUN" : "OK", detail: config.csSyncDryRun ? "ingen kanal- eller medlemsendringer" : "live-modus" });
-    lines.push({ label: "Webhook-secret", result: webhookConfigured ? "OK" : "MANGLER", detail: webhookConfigured ? "konfigurert" : "MAT_WEBHOOK_SECRET mangler" });
-    lines.push({ label: "Registration API", result: registrationConfigured ? "OK" : "MANGLER", detail: registrationConfigured ? "konfigurert" : "en eller flere REGISTRATION_* mangler" });
-    lines.push({ label: "CS Discord-oppsett", result: discordConfigured ? "OK" : "MANGLER", detail: discordConfigured ? "kategori, lobby, CS-rolle og Crew-rolle konfigurert" : "CS_CATEGORY_ID, CS_LOBBY_CHANNEL_ID, CS_PARTICIPANT_ROLE_ID eller CREW_ROLE_ID mangler" });
-    lines.push({ label: "Turnerings-ID-er", result: tournamentsConfigured ? "OK" : "MANGLER", detail: tournamentsConfigured ? "main og Wingman konfigurert" : "CS_MAIN_TOURNAMENT_ID og/eller CS_WINGMAN_TOURNAMENT_ID mangler" });
+    lines.push({
+      label: getBotText("csStatus.label.voice"),
+      result: getBotText(!csVoiceEnabled ? "csStatus.result.missing" : !csVoiceLive ? "csStatus.result.dryRun" : "csStatus.result.ok") as StatusLine["result"],
+      detail: getBotText(!csVoiceEnabled ? "csStatus.detail.voicePaused" : !csVoiceLive ? "csStatus.detail.voicePreview" : "csStatus.detail.voiceLive")
+    });
+    lines.push({
+      label: getBotText("csStatus.label.roles"),
+      result: getBotText(!csRolesEnabled ? "csStatus.result.missing" : !csRolesLive ? "csStatus.result.dryRun" : "csStatus.result.ok") as StatusLine["result"],
+      detail: getBotText(!csRolesEnabled ? "csStatus.detail.rolesPaused" : !csRolesLive ? "csStatus.detail.rolesPreview" : "csStatus.detail.rolesLive")
+    });
+    lines.push({ label: getBotText("csStatus.label.webhookSecret"), result: getBotText(webhookConfigured ? "csStatus.result.ok" : "csStatus.result.missing") as StatusLine["result"], detail: getBotText(webhookConfigured ? "csStatus.detail.configured" : "csStatus.detail.webhookMissing") });
+    lines.push({ label: getBotText("csStatus.label.registration"), result: getBotText(registrationConfigured ? "csStatus.result.ok" : "csStatus.result.missing") as StatusLine["result"], detail: getBotText(registrationConfigured ? "csStatus.detail.registrationConfigured" : "csStatus.detail.registrationMissing") });
+    lines.push({ label: getBotText("csStatus.label.discord"), result: getBotText(discordConfigured ? "csStatus.result.ok" : "csStatus.result.missing") as StatusLine["result"], detail: getBotText(discordConfigured ? "csStatus.detail.discordConfigured" : "csStatus.detail.discordMissing") });
+    lines.push({ label: getBotText("csStatus.label.tournamentIds"), result: getBotText(tournamentsConfigured ? "csStatus.result.ok" : "csStatus.result.missing") as StatusLine["result"], detail: getBotText(tournamentsConfigured ? "csStatus.detail.tournamentIdsConfigured" : "csStatus.detail.tournamentIdsMissing") });
 
     if (webhookConfigured) {
       try {
@@ -58,9 +80,9 @@ export const csStatusCommand = {
           signal: AbortSignal.timeout(3_000),
           redirect: "error"
         });
-        lines.push({ label: "Webhook-mottaker", result: response.status === 204 ? "OK" : "FEIL", detail: response.status === 204 ? `lytter på port ${config.csWebhookPort}` : `healthcheck svarte ${response.status}` });
+        lines.push({ label: getBotText("csStatus.label.receiver"), result: getBotText(response.status === 204 ? "csStatus.result.ok" : "csStatus.result.error") as StatusLine["result"], detail: response.status === 204 ? getBotText("csStatus.detail.receiverListening", { port: config.csWebhookPort }) : getBotText("csStatus.detail.receiverStatus", { status: response.status }) });
       } catch {
-        lines.push({ label: "Webhook-mottaker", result: "FEIL", detail: "ikke nåbar lokalt; kontroller at runtime startet og porten er riktig" });
+        lines.push({ label: getBotText("csStatus.label.receiver"), result: getBotText("csStatus.result.error") as StatusLine["result"], detail: getBotText("csStatus.detail.receiverFailed") });
       }
     }
 
@@ -72,13 +94,15 @@ export const csStatusCommand = {
           config.csCategoryId!,
           config.csLobbyChannelId!,
           config.csParticipantRoleId!,
+          config.manualCsParticipantRoleId!,
           config.crewRoleId!,
           config.emptyChannelDeleteDelayMs
         );
         await adapter.validate();
-        lines.push({ label: "Discord-rettigheter", result: "OK", detail: "kategori, lobby, roller, Manage Channels og Move Members validert" });
+        lines.push({ label: getBotText("csStatus.label.discord"), result: getBotText("csStatus.result.ok") as StatusLine["result"], detail: getBotText("csStatus.detail.permissionsValid") });
       } catch (error) {
-        lines.push({ label: "Discord-rettigheter", result: "FEIL", detail: error instanceof Error ? error.message : "preflight feilet" });
+        console.error("CS Discord permission preflight failed.", error instanceof Error ? error.message : "unknown error");
+        lines.push({ label: getBotText("csStatus.label.discord"), result: getBotText("csStatus.result.error") as StatusLine["result"], detail: getBotText("csStatus.detail.permissionsFailed") });
       }
     }
 
@@ -89,21 +113,24 @@ export const csStatusCommand = {
         const main = tournaments.find(tournament => tournament.id === config.csMainTournamentId);
         const wingman = tournaments.find(tournament => tournament.id === config.csWingmanTournamentId);
         lines.push({
-          label: "MAT-turneringer",
-          result: main && wingman ? "OK" : "FEIL",
-          detail: `main ${main ? `${main.type}/${main.status}/size ${main.teamSize}` : "ID ikke funnet"}; Wingman ${wingman ? `${wingman.type}/${wingman.status}/size ${wingman.teamSize}` : "ID ikke funnet"}`
+          label: getBotText("csStatus.label.tournaments"),
+          result: getBotText(main && wingman ? "csStatus.result.ok" : "csStatus.result.error") as StatusLine["result"],
+          detail: getBotText("csStatus.detail.tournaments", {
+            main: main ? `${main.type}/${main.status}/size ${main.teamSize}` : getBotText("csStatus.detail.tournamentNotFound"),
+            wingman: wingman ? `${wingman.type}/${wingman.status}/size ${wingman.teamSize}` : getBotText("csStatus.detail.tournamentNotFound")
+          })
         });
         if (main && (main.type === "shuffle" || main.teamSize !== 5)) {
-          lines.push({ label: "Main-format", result: "FEIL", detail: `forventet lagturnering med 5 spillere; fikk ${main.type}, size ${main.teamSize}` });
+          lines.push({ label: getBotText("csStatus.label.mainFormat"), result: getBotText("csStatus.result.error") as StatusLine["result"], detail: getBotText("csStatus.detail.mainFormatMismatch", { type: main.type, size: main.teamSize }) });
         }
         if (wingman && (wingman.type !== "shuffle" || wingman.teamSize !== 2)) {
-          lines.push({ label: "Wingman-format", result: "FEIL", detail: `forventet shuffle med 2 spillere; fikk ${wingman.type}, size ${wingman.teamSize}` });
+          lines.push({ label: getBotText("csStatus.label.wingmanFormat"), result: getBotText("csStatus.result.error") as StatusLine["result"], detail: getBotText("csStatus.detail.wingmanFormatMismatch", { type: wingman.type, size: wingman.teamSize }) });
         }
       } catch {
-        lines.push({ label: "MAT API", result: "FEIL", detail: "turneringslisten kunne ikke leses med MAT_URL/MAT_API_TOKEN" });
+        lines.push({ label: getBotText("csStatus.label.matApi"), result: getBotText("csStatus.result.error") as StatusLine["result"], detail: getBotText("csStatus.detail.matApiFailed") });
       }
     } else {
-      lines.push({ label: "MAT API", result: "MANGLER", detail: "MAT_URL mangler" });
+      lines.push({ label: getBotText("csStatus.label.matApi"), result: getBotText("csStatus.result.missing") as StatusLine["result"], detail: getBotText("csStatus.detail.matUrlMissing") });
     }
 
     if (registrationConfigured) {
@@ -117,9 +144,9 @@ export const csStatusCommand = {
         const baseParticipants = await registration.getCsParticipants();
         const csParticipants = await manualOverrideStore.getCsParticipants(baseParticipants);
         const steamMapped = [...csParticipants.values()].filter(person => person.steamId).length;
-        lines.push({ label: "Steam-koblinger", result: steamMapped > 0 ? "OK" : "MANGLER", detail: `${steamMapped} av ${csParticipants.size} CS-deltakere har SteamID64` });
+        lines.push({ label: getBotText("csStatus.label.steamLinks"), result: getBotText(steamMapped > 0 ? "csStatus.result.ok" : "csStatus.result.missing") as StatusLine["result"], detail: getBotText("csStatus.detail.steamCounts", { mapped: steamMapped, participants: csParticipants.size }) });
       } catch {
-        lines.push({ label: "Registration API", result: "FEIL", detail: "deltakerlisten kunne ikke leses" });
+        lines.push({ label: getBotText("csStatus.label.registration"), result: getBotText("csStatus.result.error") as StatusLine["result"], detail: getBotText("csStatus.detail.participantsFailed") });
       }
     }
 

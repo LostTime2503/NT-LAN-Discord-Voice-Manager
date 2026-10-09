@@ -8,6 +8,7 @@ import {
   type Guild,
   type VoiceChannel
 } from "discord.js";
+import { getBotText } from "../messages.js";
 
 const VOICE_CATEGORY_NAME = "–KANALER";
 const CS_TEAM_CATEGORY_NAME = "–CS LAG";
@@ -22,7 +23,7 @@ export const setupVoiceManagerCommand = {
 
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guild) {
-      await interaction.reply({ content: "Denne kommandoen kan bare brukes pa en server.", flags: MessageFlags.Ephemeral });
+      await interaction.reply({ content: getBotText("common.guildOnly"), flags: MessageFlags.Ephemeral });
       return;
     }
 
@@ -89,10 +90,5 @@ function findJoinToCreateChannel(guild: Guild): VoiceChannel | undefined {
 }
 
 function createSetupMessage(joinToCreateChannelId: string, csTeamCategoryId: string): string {
-  return [
-    "Voice manager er satt opp.",
-    "Legg disse verdiene i .env:",
-    `JOIN_TO_CREATE_CHANNEL_ID=${joinToCreateChannelId}`,
-    `CS_CATEGORY_ID=${csTeamCategoryId}`
-  ].join("\n");
+  return getBotText("setupVoiceManager.ready", { joinChannelId: joinToCreateChannelId, csCategoryId: csTeamCategoryId });
 }

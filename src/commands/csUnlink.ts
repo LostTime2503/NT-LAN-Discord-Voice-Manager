@@ -2,6 +2,8 @@ import { MessageFlags, SlashCommandBuilder, type ChatInputCommandInteraction } f
 import { isCrewMember } from "../accessManager.js";
 import { config } from "../config.js";
 import { manualOverrideStore } from "../manualOverrides.js";
+import { sendCrewLogMessage } from "../crewLog.js";
+import { getBotText } from "../messages.js";
 
 export const csUnlinkCommand = {
   data: new SlashCommandBuilder()
@@ -12,22 +14,23 @@ export const csUnlinkCommand = {
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     if (!interaction.guild || interaction.guildId !== config.guildId || !config.crewRoleId) {
-      await interaction.editReply("CS-link er ikke konfigurert for denne serveren.");
+      await interaction.editReply(getBotText("csUnlink.notConfigured"));
       return;
     }
     try {
       const actor = await interaction.guild.members.fetch(interaction.user.id);
       if (!isCrewMember(actor, config.crewRoleId)) {
-        await interaction.editReply("Bare Crew og høyere kan fjerne CS-lenker.");
+        await interaction.editReply(getBotText("csUnlink.crewOnly"));
         return;
       }
       const user = interaction.options.getUser("person", true);
       const removed = await manualOverrideStore.unlinkCsPlayer(user.id);
+      if (removed) void sendCrewLogMessage(interaction.client, getBotText("cs.linkRemoved", {}, "logs"));
       await interaction.editReply(removed
-        ? `Den manuelle Steam-koblingen for <@${user.id}> er fjernet. CS-rollen endres ikke.`
-        : `Fant ingen manuell CS-kobling for <@${user.id}>.`);
+        ? getBotText("csUnlink.removed", { userId: user.id })
+        : getBotText("csUnlink.notFound", { userId: user.id }));
     } catch (error) {
-      await interaction.editReply(error instanceof Error ? error.message : "Kunne ikke fjerne CS-lenken.");
+      await interaction.editReply(getBotText("csUnlink.failed"));
     }
   }
 };

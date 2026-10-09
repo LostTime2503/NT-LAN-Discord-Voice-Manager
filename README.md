@@ -13,24 +13,28 @@ Discord-bot for NT-LAN voice channel management.
 | `CS_CATEGORY_ID` | Nei | Kategori-ID for CS-lobby og bot-opprettede kamprom. |
 | `CS_LOBBY_CHANNEL_ID` | Nei | Voicekanalen spillere kobler seg til for a bli flyttet til riktig CS-rom. |
 | `CS_PARTICIPANT_ROLE_ID` | Nei | Rolle som gir tilgang til CS-kategorien; Crew og bot ma ogsa ha tilgang. |
-| `CS_SYNC_DRY_RUN` | Nei (standard `true`) | `true` logger romplan uten Discord-endringer. `false` oppretter bot-eide rom og ruter kvalifiserte medlemmer etter startup-preflight. Roller og kategorioppsett endres aldri av boten. |
-| `CS_SYNC_INTERVAL_MS` | Nei (standard `300000`) | Intervall for read-only MAT-planrapport i tørrkjøring. |
+| `MANUAL_CS_PARTICIPANT_ROLE_ID` | Nei | Manuell CS-adgangsrolle. Begge CS-rollene kan åpne alle konkurranserommene. |
+| `CS_ROLE_SYNC_ENABLED` | Nei (standard `false`) | Slår på automatisk rolle basert på `tournaments` fra NT-LAN-API-et, uavhengig av webhook/voice. |
+| `CS_ROLE_SYNC_DRY_RUN` | Nei (standard `true`) | Logger planlagte CS-rolletildelinger uten å endre roller. |
+| `CS_VOICE_SYNC_ENABLED` | Nei (standard `false`) | Slår på MAT-webhook/voice-flyten; kan stå av mens CS-rollen testes separat. |
+| `CS_VOICE_SYNC_DRY_RUN` | Nei (standard `true`) | `true` logger romplan uten Discord-endringer. `false` oppretter bot-eide rom og ruter kvalifiserte medlemmer etter startup-preflight. |
+| `CS_SYNC_INTERVAL_MS` | Nei (standard `300000`) | Intervall for webhook-kø/CS-roller og read-only GET-planrapport i tørrkjøring. |
 | `CS_MAIN_TOURNAMENT_ID` | Nei | MAT-ID for hovedturneringen. Tomt felt deaktiverer CS-synk til ID-en er kjent. |
 | `CS_WINGMAN_TOURNAMENT_ID` | Nei | MAT-ID for Wingman-turneringen. Tomt felt deaktiverer Wingman-synk til ID-en er kjent. |
 | `CS_WEBHOOK_PORT` | Nei (standard `8787`) | Privat HTTP-port for MAT-webhooks. |
 | `CS_WEBHOOK_BIND_ADDRESS` | Nei (standard `127.0.0.1`) | Vertens adresse som publiserer webhook-porten; endre til privat server-IP hvis MAT ikke kan nå loopback. |
 | `MAT_WEBHOOK_SECRET` | Nei | HMAC-hemmeligheten fra MAT Settings → Webhooks. Hold den utenfor Git og logger. |
 
-CS-webhook-runtime starter med `MAT_WEBHOOK_SECRET` og registrerings-API konfigurert. Webhook-porten publiseres kun på `CS_WEBHOOK_BIND_ADDRESS` (standard loopback); sett den til en privat serveradresse MAT kan nå, og aktiver MATs private/LAN-webhookvalg. Bruk Docker-nettverkets tjenestenavn mellom containere, ikke `localhost`. HMAC verifiserer avsender, men krypterer ikke payloaden. `test: true` eventer kvitteres uten lagring eller Discord-handlinger. Kølagring er atomisk i `data/cs-webhook-events.json`; score/map-eventer kvitteres uten kølegging. Wingman-rom blir stående i persistent oppryddingskø til de er tomme. `CS_SYNC_DRY_RUN=false` krever kategori, lobby, roller, begge turnerings-ID-er, webhook secret, registrerings-API og fungerende Discord-permissions preflight. Test først i egen Discord-server.
+CS-webhook-runtime starter bare med `CS_VOICE_SYNC_ENABLED=true`, `MAT_WEBHOOK_SECRET` og registrerings-API konfigurert. Ved startup leses main-bracket og Wingman-bracket; for en entydig aktiv Wingman-match hentes detaljene med `GET /api/matches/:slug`, slik at parene gjenopprettes selv om boten var nede da webhooken kom. Uklare eller ufullstendige svar endrer ikke eksisterende rom. Webhook-porten publiseres kun på `CS_WEBHOOK_BIND_ADDRESS` (standard loopback); sett den til en privat serveradresse MAT kan nå, og aktiver MATs private/LAN-webhookvalg. Bruk Docker-nettverkets tjenestenavn mellom containere, ikke `localhost`. HMAC verifiserer avsender, men krypterer ikke payloaden. `test: true` eventer kvitteres uten lagring eller Discord-handlinger. Kølagring er atomisk i `data/cs-webhook-events.json`; score/map-eventer kvitteres uten kølegging. Wingman-rom blir stående i persistent oppryddingskø til de er tomme. `CS_VOICE_SYNC_DRY_RUN=false` krever kategori, lobby, roller, begge turnerings-ID-er, webhook secret, registrerings-API og fungerende Discord-permissions preflight. Test først i egen Discord-server.
 
-For CS-identitet flates barn med utfylt `discordId` ut i en separat CS-deltakerliste og kobles på `steamId`. Barn uten Discord-kobling tas ikke med. Den vanlige `getParticipants()`-listen for nettstedstilgang forblir top-level foresatte, så et nestet barn får ikke automatisk generell `discord-koblet`-rolle.
+For CS-identitet flates barn med utfylt `discordId` ut i en separat CS-deltakerliste og kobles på `steamId`. Barn uten Discord-kobling tas ikke med. Den vanlige `getParticipants()`-listen for nettstedstilgang forblir top-level foresatte, så et nestet barn får ikke automatisk generell `discord-koblet`-rolle. `CS_ROLE_SYNC_ENABLED=true` starter rolle-sync uten å kreve MAT-webhook; `CS_ROLE_SYNC_DRY_RUN=false` aktiverer bare CS-rolletildelingen. Dermed kan testserveren prøve `CS-deltakere` med `CS_VOICE_SYNC_ENABLED=false`, uten å opprette voice-rom eller flytte medlemmer.
 
-`CS_PARTICIPANT_ROLE_ID` synkroniseres fra en eksplisitt `tournaments`-liste på NT-LAN-posten: `cs2` eller `cs2-wingman` gir den felles CS-rollen; en gyldig tom liste fjerner rollen og direkte tilgang til bot-eide CS-rom. Manglende felt, manglende personpost eller API-feil bevarer eksisterende tilgang. Manuelle `/cs-link`-koblinger overstyres ikke av automatisk enrollment-sync. `/cs-status` viser rolle-/Steam-tellinger uten spillerverdier.
+`CS_PARTICIPANT_ROLE_ID` synkroniseres fra en eksplisitt `tournaments`-liste på NT-LAN-posten: `cs2` eller `cs2-wingman` gir den automatiske CS-rollen; en gyldig tom liste fjerner bare denne rollen. `MANUAL_CS_PARTICIPANT_ROLE_ID` gis av Crew og påvirkes aldri av enrollment-sync. Begge rollene gir adgang til alle CS-konkurranserommene. Manglende felt, manglende personpost eller API-feil bevarer eksisterende automatisk tilgang. Manuelle `/cs-link`-koblinger overstyres ikke av automatisk enrollment-sync. `/cs-status` viser runtime-modus og Steam-tellinger uten spillerverdier.
 
-I MAT Settings -> Webhooks settes URL til `http://<privat-adresse>:<CS_WEBHOOK_PORT>/webhooks/mat`, og den utstedte signeringshemmeligheten legges lokalt i `MAT_WEBHOOK_SECRET`. Hvis MAT er en separat container, må den og boten dele et Docker-nettverk eller MAT må bruke vertens private IP. Aktiver MAT-innstillingen for private/lokale adresser. «Send test event» skal gi HTTP 202, men blir med vilje ikke lagt i kø og utløser ingen Discord-handling. Bruk Simulation mode først med `CS_SYNC_DRY_RUN=true`; test deretter live channel/lobby routing bare i separat Discord-server.
+I MAT Settings -> Webhooks settes URL til `http://<privat-adresse>:<CS_WEBHOOK_PORT>/webhooks/mat`, og den utstedte signeringshemmeligheten legges lokalt i `MAT_WEBHOOK_SECRET`. Hvis MAT er en separat container, må den og boten dele et Docker-nettverk eller MAT må bruke vertens private IP. Aktiver MAT-innstillingen for private/lokale adresser. «Send test event» skal gi HTTP 202, men blir med vilje ikke lagt i kø og utløser ingen Discord-handling. Bruk Simulation mode først med `CS_VOICE_SYNC_ENABLED=true` og `CS_VOICE_SYNC_DRY_RUN=true`; test deretter live voice-ruting bare i separat Discord-server.
 
-For a kjøre test og produksjon samtidig, opprett to Dockhand-stacker med ulike stack-/Compose-prosjektnavn. Compose setter ikke fast `container_name`, og named volume blir dermed separat per stack. Teststakken ma bruke eget Discord-bot-token, testguildens kanal-/rolle-ID-er, egen MAT webhook secret og egen hostport (f.eks. `CS_WEBHOOK_PORT=8788`), mens produksjon beholder port `8787`. Bruk `CS_SYNC_DRY_RUN=false` bare i teststakken etter Simulation/tørrkjøring. `Dockerfile` er felles og trenger ingen testvariant.
-| `CREW_LOG_CHANNEL_ID` | Nei | Tekstkanal-ID boten sender online/offline-meldinger til, f.eks. `#bot-log`. |
+For a kjøre test og produksjon samtidig, opprett to Dockhand-stacker med ulike stack-/Compose-prosjektnavn. Compose setter ikke fast `container_name`, og named volume blir dermed separat per stack. Teststakken ma bruke eget Discord-bot-token, testguildens kanal-/rolle-ID-er, egen MAT webhook secret og egen hostport (f.eks. `CS_WEBHOOK_PORT=8788`), mens produksjon beholder port `8787`. Sett først `CS_VOICE_SYNC_ENABLED=true` og behold `CS_VOICE_SYNC_DRY_RUN=true`; sett bare voice dry-run til `false` etter Simulation på teststacken. `Dockerfile` er felles og trenger ingen testvariant.
+| `CREW_LOG_CHANNEL_ID` | Nei | Tekstkanal for sikre oppsummeringer av viktige bot-handlinger; Dockhand mottar også loggene via stdout/stderr. |
 | `EMPTY_CHANNEL_DELETE_DELAY_MS` | Nei (standard `300000`) | Millisekunder en tom midlertidig voice-kanal star ubrukt for boten sletter den. |
 | `MAT_URL` | Nei | HTTPS-origin for Auto Tournament API, f.eks. `https://cs.sivert.io`. |
 | `MAT_API_TOKEN` | Nei | MAT read-only service-token; brukes ikke av det offentlige metadata-probe-scriptet. |
@@ -172,21 +176,19 @@ Nar du star i en midlertidig kanal du selv har laget, kan du ogsa endre navn med
 
 Boten sorterer midlertidige kanaler alfabetisk under `–KANALER` etter opprettelse og navneendring.
 
-Hvis boten restartes, rydder den automatisk ved oppstart:
+Ved restart gjenoppretter boten bare eierskap fra `data/voice-owners.json`. Den skanner ikke kategorien for å overta kanaler, sletter ikke tomme kanaler og flytter ikke fastlåste medlemmer ved oppstart. Dette hindrer at manuelle endringer blir overskrevet. Kanaler boten selv eier kan fortsatt få tom-kanal-timer når medlemmer går ut mens vanlig voice er aktiv.
 
-- tomme voice-kanaler under `–KANALER` slettes
-- voice-kanaler under `–KANALER` som fortsatt har brukere blir tatt over og overvaket videre
-- `Lag ny kanal her` slettes aldri av cleanupen
-- brukere som ble sittende fast i `Lag ny kanal her` mens boten var nede, far en ny midlertidig kanal og blir flyttet dit automatisk
+Manuelt opprettede kanaler i `–KANALER` blir ikke adoptert av boten. Medlemmer som blir sittende i `Lag ny kanal her` mens boten er nede må bli med på nytt etter oppstart.
 
 Midlertidige kanaler far automatisk serverens gjeldende maks bitrate. Pa en ikke-boostet server blir dette Discords standard maks. Hvis testserveren boostes senere, oker bitraten automatisk uten kodeendring.
 
-Hvis du setter `CREW_LOG_CHANNEL_ID` i `.env` til en tekstkanal-ID, f.eks. `#bot-log`, sender boten:
+Hvis du setter `CREW_LOG_CHANNEL_ID` til en tekstkanal-ID, f.eks. `#bot-log`, sender boten sikre, oppsummerte audit-hendelser dit og skriver de samme hendelsene til Dockhand/stdout:
 
 - en melding nar den blir online
 - en melding nar den stoppes kontrollert med `Ctrl+C` eller `docker stop`
+- oppsummeringer av settings, synker, voice-kanalhandlinger og manuelle Crew-kommandoer
 
-Dette dekker planlagt stopp, ikke krasj eller strombrudd. Automatisk varsling ved krasj krever et overvakingsoppsett rundt Docker/Dockhand, som vi setter opp i Docker-milepaelen.
+Dette dekker planlagt stopp, ikke krasj eller strombrudd. Feil i Crew-loggkanalen faller tilbake til Dockhand/stdout og stopper ikke boten. Loggene inneholder ikke tokens, Steam-ID-er, medlemsnavn eller rå API-payloads.
 
 For rask lokal test kan du sette dette lavere i `.env`, for eksempel:
 
@@ -206,13 +208,14 @@ API-formatet er `{ "data": { "participants": { "DISCORD_ID": { "name": "Fullt na
 | --- | --- |
 | `ACCESS_CHANNEL_ID` | Tekstkanal for inngangsmeldingen. |
 | `ACCESS_ROLE_ID` | Egen tilgangsrolle under bade bot og Crew. Du bestemmer rettighetene i Discord; administrative rettigheter varsles uten a stoppe boten. |
+| `MANUAL_ACCESS_ROLE_ID` | Manuell tilgangsrolle tildelt med `/giveaccess`; beholdes separat fra nettstedets `ACCESS_ROLE_ID`. |
 | `CREW_ROLE_ID` | Crew-rolle; denne og roller over den gir tilgang uten nettsidekobling. Administrator og servereier unntas ogsa. |
 | `REGISTRATION_URL` | HTTPS-lenken medlemmene apner for a logge inn/koble Discord. |
 | `REGISTRATION_API_URL` | HTTPS-adressen for deltakerobjektet. |
 | `REGISTRATION_TOKEN_URL` | HTTPS-adressen for tokenutstedelse. |
 | `REGISTRATION_CLIENT_ID` | Klient-ID, normalt `discord-bot`. |
 | `REGISTRATION_CLIENT_SECRET` | Hemmelig klientnokkel. Aldri i Git eller logger. |
-| `ACCESS_DRY_RUN` | Standard `true`: ingen navne-, rolle-, meldings- eller rettighetsendringer fra tilgangskontrollen. Eksisterende voice-funksjoner fortsetter som normalt. |
+| `ACCESS_DRY_RUN` | Standard `true`: automatisk synk gjør ingen navne-/rolleendringer. Crew kan fortsatt gjøre manuelle endringer med eksplisitt `bekreft:true` på `/giveaccess` eller `/clearaccessoverride`. |
 | `ACCESS_SYNC_INTERVAL_MS` | Standard `15000`: intervall for automatisk kontroll av tilgang og kallenavn. Sett høyere hvis API-et har strenge rategrenser. |
 
 Alle fire API-/token-/klientinnstillinger ma fylles ut sammen. Nar de er tomme, er tilgangskontrollen av. Nar API-et er konfigurert, kreves kanal, roller og nettsidelenke. MAT-variablene i eksempelfilen er reservert; det er ingen MAT- eller matfunksjon i denne implementasjonen.
@@ -220,7 +223,7 @@ Alle fire API-/token-/klientinnstillinger ma fylles ut sammen. Nar de er tomme, 
 ### Oppstart pa testserver
 
 1. Roter eventuelle tidligere delte hemmeligheter. Fyll ut API-innstillingene og nye Discord-ID-er lokalt uten a dele verdiene.
-2. Opprett en tilgangsrolle med de medlemsrettighetene du onsker, plassert under bade botrollen og Crew. Sett `ACCESS_ROLE_ID`. Boten endrer aldri rollens serverrettigheter.
+2. Opprett `discord-koblet` for automatisk nettsideverifisering og `tilgang-manuell` for `/giveaccess`. Begge gir privat kanaltilgang; sett ID-ene som `ACCESS_ROLE_ID` og `MANUAL_ACCESS_ROLE_ID`. Plasser begge under botrollen og Crew. Boten endrer aldri rollenes serverrettigheter.
 3. Aktiver **Server Members Intent** under Bot i Discord Developer Portal. Boten trenger `Manage Nicknames`, `Manage Roles`, samt eksisterende voice-rettigheter. I inngangskanalen trenger den `View Channel`, `Send Messages` og `Read Message History`.
 4. Sett kanalrettighetene manuelt i Discord som beskrevet nedenfor. Det finnes ingen kategoriliste eller automatisk kanalbeskyttelse i boten.
 5. Behold `ACCESS_DRY_RUN=true`. Kjor `npm.cmd test`, `npm.cmd run deploy:commands` og `npm.cmd run dev`. Loggen viser bare summerte kontrollresultater, ikke navn eller API-payloads.
@@ -230,27 +233,45 @@ Alle fire API-/token-/klientinnstillinger ma fylles ut sammen. Nar de er tomme, 
 
 Inngangsmeldingen har nettsidelenke og **Sjekk tilgang**-knapp. Knappen gir et privat svar. Discord-kallenavnet settes til fornavn fulgt av initial for hvert resterende navneledd, for eksempel `Silje M. K.`; sammensatt fornavn beholdes slik API-et oppgir det. Boten retter koblede medlemmers manuelle kallenavnsendringer umiddelbart via Discords medlemsoppdatering, med periodisk synk som reserve. For å unngå at Discord viser navnet som en kortvarig endring før boten retter det, fjern `Change Nickname` fra `@everyone` og alle vanlige medlemsroller. Behold nødvendige navne-/administratorrettigheter for Crew. Discords rollepermissions er kumulative, så kontroller alle roller medlemmet har. Hvis navnet mangler, ikke matcher fornavnet, inneholder ugyldige tegn eller overskrider Discords 32-tegnsgrense etter forkorting, må Crew hjelpe. Crew beholder tilgang uten kobling/navn; deres navn oppdateres bare hvis API-et har dem og boten kan endre medlemmet. Høyere roller og servereier må sette navn selv.
 
-### Nødkommandoer
+### Crew-kommandoer
 
-Crew-only slash commands: `/giveaccess person kallenavn` stores a manual nickname/access-role override that automatic registration sync preserves; the person option suggests server members without the access role. `/clearaccessoverride person` removes the override and returns the member to automatic sync. `/cs-link person steamid64` grants the CS participant role and stores a manual Discord-to-Steam link for MAT room routing. `/cs-unlink person` removes only that mapping and intentionally leaves the CS role unchanged. `/cs-status` checks webhook health, tournament IDs/formats, Discord permissions and the Steam-linked participant count; it prints no secrets or player IDs. CS links do not grant the normal website access role. Overrides are stored locally in `data/manual-access-overrides.json`, excluded from Git, and must be removed explicitly.
+`/giveaccess` gir `MANUAL_ACCESS_ROLE_ID` og lagrer et manuelt kallenavn. `bekreft:true` kreves for å gjøre endringen, også når automatisk tilgang står i tørrkjøring. Når API-et senere finner en gyldig nettsidekobling, overfører en live tilgangssynk medlemmet til `ACCESS_ROLE_ID` og fjerner den manuelle rollen/overstyringen. I forhåndsvisning melder **Sjekk tilgang** at koblingen er funnet, men endrer ingenting; Crew må bekrefte live i `/bot-settings`. API-feil eller manglende kobling bevarer manuell tilgang. `/clearaccessoverride` krever bekreftelse og fjerner den manuelle rollen eksplisitt.
+
+`/cs-link person steamid64` kobler identitet og gir `MANUAL_CS_PARTICIPANT_ROLE_ID`; `/cs-unlink person` fjerner bare Steam-koblingen og lar CS-adgangen stå. `/cs-giveaccess person handling` kan gi eller fjerne den manuelle CS-rollen uten Steam-kobling. Automatisk enrollment-synk administrerer bare `CS_PARTICIPANT_ROLE_ID`.
+
+`/bot-settings` uten valg viser status. Velg funksjon og `aktiv` for å pause/gjenoppta nettsidetilgang, vanlig voice, CS-roller eller CS-voice. Påslåing av muterende sync starter alltid i forhåndsvisning; etter kontroll av Dockhand-loggen kan Crew kjøre kommandoen igjen med `bekreft_live:true`. Innstillingene lagres i `data/bot-settings.json` i `bot-data`-volumet. Pausing stopper automatikken uten å slette roller eller kanaler. Vanlig voice rydder ikke kanaler ved oppstart.
+
+`/make-team-chats konkurranse` viser en MAT-basert plan for Hovedturnering eller Wingman. Bekreftelseskoden er engangs, varer fem minutter og er bundet til Crew-brukeren og den eksakte romlisten. Opprettede rom bruker en manuell markør som automatisk MAT-sync ignorerer; begge CS-rollene har adgang.
+
+`/clean-cs-vc` viser alle voice-rom under `CS_CATEGORY_ID` unntatt `CS_LOBBY_CHANNEL_ID`. Den kan også slette manuelt opprettede rom i CS-kategorien, men aldri rom i vanlige voice-kategorier. Bekreftelseskoden er engangs og blir ugyldig hvis romlisten endres.
+
+`/notify-cs-participants` lar Crew velge konkurranse, tekstkanal og en preset fra `messages.json`. Ping er av som standard; ved ping nevnes bare de to CS-rollene. `/reload-messages` laster den monterte meldingsfila på nytt uten restart eller command-deploy. CS-varsler støtter `{competition}`, `{minutes}`, `{lobby}` og `{score}`; presetens `required`-felt må fylles ut før sending.
+
+`CREW_LOG_CHANNEL_ID` får oppsummeringer av innstillinger/synker og konkrete tilgangshandlinger, for eksempel «satte kallenavnet for `brukernavn` til `Ola N.`» eller «overførte fra manuell til verifisert tilgang». De samme audit-linjene går til stdout/stderr og vises i Dockhand. Ingen tokens, Steam-ID-er eller rå API-payloads logges. Feil i Crew-loggkanalen stopper ikke boten.
+
+Overrides for nettsidetilgang og Steam-koblinger lagres i `data/manual-access-overrides.json`; innstillinger lagres separat i `data/bot-settings.json`.
+
+### Redigere meldinger
+
+Teksten i `#få-tilgang`, svarene fra **Sjekk tilgang**, alle slash-kommandoenes svar, Crew-/Dockhand-loggmeldinger og `cs.notifications`-malene ligger i `messages.json` i rotmappen under `access`, `commands`, `logs` og `cs`. Rediger JSON-strenger og behold nøklene. `{felt}`-plassholdere fylles inn av boten. Kjør `/reload-messages` for å ta tekstendringer i bruk uten restart eller command-deploy. Hvis fila mangler eller JSON er ugyldig, bruker boten innebygde standardtekster.
 
 ### Kanalrettigheter
 
 Rettigheter settes én gang per kategori, ikke per kanal. I hver kategori synkroniser kanalene med kategorien; en usynkronisert kanal kan overstyre kategoriens regler. Kanaler uten kategori må konfigureres separat. `discord-koblet` kan ha vanlige medlemsrettigheter globalt, men kategori-overstyringer bestemmer unntakene.
 
-| Kategori / område | `@everyone` | `discord-koblet` | Andre roller |
+| Kategori / område | `@everyone` | `discord-koblet` og `tilgang-manuell` | Andre roller |
 | --- | --- | --- | --- |
 | `Start her` med `#få-tilgang` | Tillat **Vis kanal** og **Les meldingshistorikk**; nekt **Send meldinger** hvis kanalen skal være skrivebeskyttet | Nekt **Vis kanal** | Crew og bot tillates ved behov |
-| Vanlige medlemskategorier: info, chat og voice | Nekt **Vis kanal** | Tillat **Vis kanal** | Crew/ledelse og bot tillates |
-| Kategorien med `Lag ny kanal her` | Eksplisitt nekt **Vis kanal** | Eksplisitt tillat **Vis kanal** | Crew og bot tillates |
-| Privat Crew-kategori | Nekt **Vis kanal** | Nekt **Vis kanal** | Crew og godkjent ledelse tillates; bot tillates |
-| `CS-konkurranse` | Nekt **Vis kanal** | Nekt hvis alle verifiserte ikke skal inn | `CS-deltaker`, Crew og bot tillates |
+| Vanlige medlemskategorier: info, chat og voice | Nekt **Vis kanal** | Tillat **Vis kanal** for begge rollene | Crew/ledelse og bot tillates |
+| Kategorien med `Lag ny kanal her` | Eksplisitt nekt **Vis kanal** | Eksplisitt tillat **Vis kanal** for begge rollene | Crew og bot tillates |
+| Privat Crew-kategori | Nekt **Vis kanal** | Nekt **Vis kanal** for begge rollene | Crew og godkjent ledelse tillates; bot tillates |
+| `CS-konkurranse` | Nekt **Vis kanal** | Nekt hvis alle verifiserte ikke skal inn | `CS-deltaker`, `CS-deltaker-manuell`, Crew og bot tillates |
 
-**Voice-sjekken:** Koden kontrollerer foreldrekategorien til kanalen med `JOIN_TO_CREATE_CHANNEL_ID`. Der må både `@everyone`-nektelsen og `discord-koblet`-tillatelsen være eksplisitte på kategorien; globale rolletillatelser eller overstyringer på selve voice-kanalen er ikke nok. Nye midlertidige kanaler kopierer kategoriens regler. Botrollen må i tillegg ha kanaltilgang og `Manage Channels` der den oppretter/flytter voice-kanaler.
+**Voice-sjekken:** Koden varsler i logger hvis foreldrekategorien til `JOIN_TO_CREATE_CHANNEL_ID` mangler anbefalte overstyringer: nekt **Vis kanal** og **Koble til** for `@everyone`, og tillat begge for `discord-koblet` og `tilgang-manuell`. Dette blokkerer ikke oppretting. Nye midlertidige kanaler kopierer kategoriens regler og gir i tillegg oppretteren eksplisitt **Vis kanal** og **Koble til**. Botrollen må fortsatt ha Discord-rettighetene som trengs for å opprette kanaler og flytte medlemmer.
 
-**Foreslått global standard:** `@everyone` får ikke **Vis kanaler** i rolleinnstillingene, mens `discord-koblet` får det. Kategoriene `Start her`, `Crew` og `CS-konkurranse` overstyrer dette som vist i tabellen. Discord kombinerer overstyringer fra andre roller og personunntak; kontroller dem hvis noen ser en kanal de ikke skal se. Serveradministratorer omgår skjulte kanaler.
+**Foreslått global standard:** `@everyone` får ikke **Vis kanaler** i rolleinnstillingene, mens `discord-koblet` og `tilgang-manuell` får det. Kategoriene `Start her`, `Crew` og `CS-konkurranse` overstyrer dette som vist i tabellen. Discord kombinerer overstyringer fra andre roller og personunntak; kontroller dem hvis noen ser en kanal de ikke skal se. Serveradministratorer omgår skjulte kanaler.
 
-Crew har tilgang uten API-kobling. Hvis boten skal oppdatere Crew-kallenavn, må botrollen ligge over Crew og ha `Manage Nicknames`; boten har ikke automatisk Administrator. Tilgangsrollen må ligge under botrollen for at boten skal kunne tildele/fjerne den.
+Crew har tilgang uten API-kobling. Hvis boten skal oppdatere Crew-kallenavn, må botrollen ligge over Crew og ha `Manage Nicknames`; boten har ikke automatisk Administrator. Begge tilgangsrollene må ligge under botrollen for at boten skal kunne tildele/fjerne dem.
 
 `/setup-access` endrer ikke kanalrettigheter. Den publiserer eller oppdaterer botens melding i `ACCESS_CHANNEL_ID`. Den søker blant de siste 100 meldingene etter botens melding med tilgangsknappen; hvis den ikke finner den, sender den en ny.
 
@@ -260,7 +281,7 @@ Crew har tilgang uten API-kobling. Hvis boten skal oppdatere Crew-kallenavn, må
 
 ### Tilgangssynk og feilsøking
 
-Et vellykket og formatvalidert API-svar brukes som koblingsliste. Mangler en vanlig brukers Discord-ID i et vellykket svar, fjernes tilgangsrollen ved neste kontroll (`revoked`). Crew, roller over Crew, administratorer og servereier unntas. Kallenavnet tilbakestilles ikke; `ACCESS_DRY_RUN=true` fjerner ingen roller.
+Et vellykket og formatvalidert API-svar brukes som koblingsliste. Mangler en vanlig brukers Discord-ID i et vellykket svar, fjernes `discord-koblet`-rollen ved neste kontroll (`revoked`); `tilgang-manuell` røres ikke av automatisk synk. Crew, roller over Crew, administratorer og servereier unntas. Kallenavnet tilbakestilles ikke; `ACCESS_DRY_RUN=true` fjerner ingen automatiske roller.
 
 API-nedetid, HTTP-feil, tidsavbrudd og ugyldig svarformat fjerner ikke eksisterende roller. En vellykket tom liste regnes derimot som gyldig og kan fjerne tilgang for alle vanlige medlemmer. API-et må derfor returnere en komplett liste over alle koblede Discord-kontoer. Forespørsler, rolletildeling og voice-oppretting feiler trygt hvis API eller rolleoppsett ikke kan kontrolleres. Fjerning av rolle kobler ikke automatisk en allerede aktiv voice-forbindelse fra.
 

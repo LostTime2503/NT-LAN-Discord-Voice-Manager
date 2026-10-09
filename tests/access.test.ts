@@ -2,13 +2,15 @@ import assert from "node:assert/strict";
 import { mock, test } from "node:test";
 import { ChannelType, Collection, PermissionFlagsBits, PermissionsBitField, type CategoryChannel, type Client, type GuildMember } from "discord.js";
 import { AccessConfigurationError, AccessManager, describeAccessStartupError, isCrewMember, reconcileMember, startAccessSync, type AccessSettings } from "../src/accessManager.js";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ManualOverrideStore } from "../src/manualOverrides.js";
+import { getBotText, parseBotMessages, renderCsNotification } from "../src/messages.js";
 
 const settings: AccessSettings = {
-  guildId: "123456789012345678", accessRoleId: "123456789012345679", crewRoleId: "123456789012345680",
+  guildId: "123456789012345678", accessRoleId: "123456789012345679", manualAccessRoleId: "123456789012345686",
+  crewRoleId: "123456789012345680",
   channelId: "123456789012345681", websiteUrl: "https://example.test/", dryRun: false,
   intervalMs: 60_000
 };
@@ -20,18 +22,21 @@ function fixture(options: { crew?: boolean; higher?: boolean; manageable?: boole
     comparePositionTo(other: { position: number }) { return this.position - other.position; } });
   const crew = role(settings.crewRoleId, 10);
   const access = role(settings.accessRoleId, 2);
+  const manualAccess = role(settings.manualAccessRoleId, 3);
   const bot = role("123456789012345682", 8);
+  const rolesById = new Map([[crew.id, crew], [access.id, access], [manualAccess.id, manualAccess]]);
   const memberRole = options.crew ? crew : role("123456789012345683", options.higher ? 11 : 1);
   const memberRoles = new Collection([[memberRole.id, memberRole]]);
   const member = {
     id: "123456789012345684", user: { bot: false }, nickname: options.nickname ?? null,
     manageable: options.manageable ?? true, permissions: new PermissionsBitField(),
-    roles: { cache: memberRoles, highest: memberRole, async add() { actions.push("role"); },
-      async remove(roleId: string) { actions.push("remove-role"); memberRoles.delete(roleId); } },
+    roles: { cache: memberRoles, highest: memberRole,
+      async add(roleId: string) { actions.push(roleId === settings.manualAccessRoleId ? "manual-role" : "role"); memberRoles.set(roleId, rolesById.get(roleId) ?? {}); },
+      async remove(roleId: string) { actions.push(roleId === settings.manualAccessRoleId ? "remove-manual-role" : "remove-role"); memberRoles.delete(roleId); } },
     async setNickname() { actions.push("nickname"); if (options.failRename) throw new Error("Synthetic failure"); },
     guild: {
       id: settings.guildId, ownerId: "123456789012345685",
-      roles: { cache: new Collection([[crew.id, crew], [access.id, access]]) },
+      roles: { cache: new Collection([[crew.id, crew], [access.id, access], [manualAccess.id, manualAccess]]) },
       members: { me: { permissions: new PermissionsBitField([PermissionFlagsBits.ManageNicknames, PermissionFlagsBits.ManageRoles]),
         roles: { highest: bot } } }
     }
@@ -45,41 +50,191 @@ test("ordinary members receive nickname before access", async () => {
   assert.deepEqual(actions, ["nickname", "role"]);
 });
 
-test("manual access override keeps the chosen nickname until Crew clears it", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "manual-access-"));
+test("manual access is promoted to website-verified access after a successful live check", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "manual-access-promotion-"));
   const { member, actions } = fixture();
-  const accessRole = member.guild.roles.cache.get(settings.accessRoleId)!;
+  const manualRole = member.guild.roles.cache.get(settings.manualAccessRoleId)!;
+  Object.assign(member.guild.roles, { fetch: async () => member.guild.roles.cache });
+  Object.assign(member.guild.members, { fetchMe: async () => member.guild.members.me, fetch: async () => member });
+  Object.assign(member.roles, {
+    add: async (roleId: string) => {
+      actions.push(roleId === settings.manualAccessRoleId ? "manual-role" : "role");
+      member.roles.cache.set(roleId, roleId === settings.manualAccessRoleId ? manualRole : member.guild.roles.cache.get(roleId)!);
+    },
+    remove: async (roleId: string) => {
+      actions.push(roleId === settings.manualAccessRoleId ? "remove-manual-role" : "remove-role");
+      member.roles.cache.delete(roleId);
+    }
+  });
+  Object.assign(member, { setNickname: async (nickname: string) => { actions.push("nickname"); member.nickname = nickname; } });
+  let apiCalls = 0;
+  const store = new ManualOverrideStore(join(directory, "overrides.json"));
+  const manager = new AccessManager(settings, async () => {
+    apiCalls += 1;
+    return new Map([[member.id, { name: "Website Name", firstName: "Website" }]]);
+  }, store);
+  const auditActions: Array<{ action: string; nickname?: string }> = [];
+  manager.setActionReporter(action => auditActions.push({
+    action: action.action,
+    ...(action.nickname ? { nickname: action.nickname } : {})
+  }));
+  try {
+    await manager.grantManualAccess(member, "Chosen Nickname", "123456789012345685");
+    assert.equal(await manager.check(member), "verified");
+    assert.equal(member.nickname, "Website N.");
+    assert.equal(apiCalls, 1);
+    assert.equal(member.roles.cache.has(settings.manualAccessRoleId), false);
+    assert.equal(member.roles.cache.has(settings.accessRoleId), true);
+    assert.equal(await store.getAccessOverride(member.id), undefined);
+    assert.deepEqual(auditActions, [
+      { action: "nickname-set", nickname: "Chosen Nickname" },
+      { action: "manual-role-granted" },
+      { action: "nickname-set", nickname: "Website N." },
+      { action: "manual-role-promoted" }
+    ]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("manual access preview reports a found website link without mutating either role", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "manual-access-linked-preview-"));
+  const { member, actions } = fixture();
+  Object.assign(member.guild.roles, { fetch: async () => member.guild.roles.cache });
+  Object.assign(member.guild.members, { fetchMe: async () => member.guild.members.me, fetch: async () => member });
+  const store = new ManualOverrideStore(join(directory, "overrides.json"));
+  let apiCalls = 0;
+  const manager = new AccessManager({ ...settings, dryRun: true }, async () => {
+    apiCalls += 1;
+    return new Map([[member.id, person]]);
+  }, store);
+  try {
+    await manager.grantManualAccess(member, "Chosen Nickname", "123456789012345685", true);
+    actions.length = 0;
+    assert.equal(await manager.check(member), "dry-run-linked");
+    assert.equal(apiCalls, 1);
+    assert.deepEqual(actions, []);
+    assert.equal(member.roles.cache.has(settings.manualAccessRoleId), true);
+    assert.equal(member.roles.cache.has(settings.accessRoleId), false);
+    assert.ok(await store.getAccessOverride(member.id));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("registration API failure preserves manual access and its override", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "manual-access-api-failure-"));
+  const { member } = fixture();
+  Object.assign(member.guild.roles, { fetch: async () => member.guild.roles.cache });
+  Object.assign(member.guild.members, { fetchMe: async () => member.guild.members.me, fetch: async () => member });
+  const store = new ManualOverrideStore(join(directory, "overrides.json"));
+  const manager = new AccessManager(settings, async () => { throw new Error("Synthetic API outage"); }, store);
+  try {
+    await manager.grantManualAccess(member, "Chosen Nickname", "123456789012345685");
+    assert.equal(await manager.check(member), "manual-override");
+    assert.equal(member.roles.cache.has(settings.manualAccessRoleId), true);
+    assert.ok(await store.getAccessOverride(member.id));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("manually removed access role clears its override and is not restored", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "manual-access-revoke-event-"));
+  const { member, actions } = fixture();
+  Object.assign(member.guild.roles, { fetch: async () => member.guild.roles.cache });
+  Object.assign(member.guild.members, { fetchMe: async () => member.guild.members.me, fetch: async () => member });
+  const store = new ManualOverrideStore(join(directory, "overrides.json"));
+  let apiCalls = 0;
+  const manager = new AccessManager(settings, async () => { apiCalls += 1; return new Map(); }, store);
+  try {
+    await manager.grantManualAccess(member, "Chosen Nickname", "123456789012345685");
+    actions.length = 0;
+    const oldMember = {
+      ...member,
+      roles: { ...member.roles, cache: new Collection(member.roles.cache) }
+    } as GuildMember;
+    member.roles.cache.delete(settings.manualAccessRoleId);
+    await manager.handleManualAccessRoleRemoval(oldMember, member, false);
+
+    assert.equal(await store.getAccessOverride(member.id), undefined);
+    assert.equal(await manager.check(member), "not-linked");
+    assert.equal(member.roles.cache.has(settings.manualAccessRoleId), false);
+    assert.equal(member.roles.cache.has(settings.accessRoleId), false);
+    assert.equal(apiCalls, 1);
+    assert.deepEqual(actions, []);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("missed manual-role removal event is detected by the next access check", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "manual-access-revoke-poll-"));
+  const { member } = fixture();
+  Object.assign(member.guild.roles, { fetch: async () => member.guild.roles.cache });
+  Object.assign(member.guild.members, { fetchMe: async () => member.guild.members.me, fetch: async () => member });
+  const store = new ManualOverrideStore(join(directory, "overrides.json"));
+  const manager = new AccessManager(settings, async () => new Map(), store);
+  try {
+    await manager.grantManualAccess(member, "Chosen Nickname", "123456789012345685");
+    member.roles.cache.delete(settings.manualAccessRoleId);
+    assert.equal(await manager.check(member), "not-linked");
+    assert.equal(await store.getAccessOverride(member.id), undefined);
+    assert.equal(member.roles.cache.has(settings.manualAccessRoleId), false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("confirmed manual access works during dry-run and can be cleared without resuming paused sync", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "manual-access-dry-run-"));
+  const { member, actions } = fixture();
   Object.assign(member.guild.roles, { fetch: async () => member.guild.roles.cache });
   Object.assign(member.guild.members, {
     fetchMe: async () => member.guild.members.me,
     fetch: async () => member
   });
-  Object.assign(member.roles, { add: async (roleId: string) => {
-    actions.push("role");
-    member.roles.cache.set(roleId, accessRole);
-  } });
-  Object.assign(member, { setNickname: async (nickname: string) => {
-    actions.push("nickname");
-    member.nickname = nickname;
-  } });
   let apiCalls = 0;
-  const manualOverrides = new ManualOverrideStore(join(directory, "overrides.json"));
-  const manager = new AccessManager(settings, async () => {
+  const store = new ManualOverrideStore(join(directory, "overrides.json"));
+  const manager = new AccessManager({ ...settings, dryRun: true }, async () => {
     apiCalls += 1;
-    return new Map([[member.id, { name: "Website Name", firstName: "Website" }]]);
-  }, manualOverrides);
-
+    return new Map([[member.id, person]]);
+  }, store);
   try {
-    await manager.grantManualAccess(member, "Chosen Nickname", "123456789012345685");
-    assert.deepEqual(actions, ["nickname", "role"]);
-    assert.equal(member.nickname, "Chosen Nickname");
-    assert.equal(await manager.check(member), "manual-override");
-    assert.equal(member.nickname, "Chosen Nickname");
+    await assert.rejects(manager.grantManualAccess(member, "Chosen Nickname", "123456789012345685"), /bekreft:true/);
+    await manager.grantManualAccess(member, "Chosen Nickname", "123456789012345685", true);
+    assert.equal(member.roles.cache.has(settings.manualAccessRoleId), true);
+    assert.equal(member.roles.cache.has(settings.accessRoleId), false);
     assert.equal(apiCalls, 0);
 
-    assert.equal(await manager.clearManualAccess(member), true);
-    assert.equal(member.nickname, "Website N.");
-    assert.equal(apiCalls, 1);
+    assert.equal(await manager.clearManualAccess(member, true, false), true);
+    assert.equal(member.roles.cache.has(settings.manualAccessRoleId), false);
+    assert.equal(member.roles.cache.has(settings.accessRoleId), false);
+    assert.equal(apiCalls, 0);
+    assert.ok(actions.includes("manual-role"));
+    assert.ok(actions.includes("remove-manual-role"));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("failed manual role removal preserves its persisted access override", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "manual-access-clear-failure-"));
+  const { member } = fixture();
+  const manualRole = member.guild.roles.cache.get(settings.manualAccessRoleId)!;
+  Object.assign(member.guild.roles, { fetch: async () => member.guild.roles.cache });
+  Object.assign(member.guild.members, { fetchMe: async () => member.guild.members.me, fetch: async () => member });
+  Object.assign(member.roles, {
+    add: async (roleId: string) => { member.roles.cache.set(roleId, roleId === settings.manualAccessRoleId ? manualRole : {}); },
+    remove: async () => { throw new Error("synthetic Discord permission failure"); }
+  });
+  const store = new ManualOverrideStore(join(directory, "overrides.json"));
+  const manager = new AccessManager(settings, async () => new Map(), store);
+  try {
+    await manager.grantManualAccess(member, "Chosen Nickname", "123456789012345685");
+    await assert.rejects(manager.clearManualAccess(member, true, false), /synthetic Discord permission failure/);
+    assert.ok(await store.getAccessOverride(member.id));
+    assert.equal(member.roles.cache.has(settings.manualAccessRoleId), true);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -133,7 +288,7 @@ test("periodic sync fetches the complete guild member cache once, not every inte
   assert.equal(fullFetches, 1);
   assert.equal(individualFetches, 0);
   assert.equal(apiCalls, 2);
-  assert.equal(actions.length, 4);
+  assert.equal(actions.length, 3);
 });
 
 test("entry message uses Norwegian copy and updates the existing link URL", async () => {
@@ -161,12 +316,62 @@ test("entry message uses Norwegian copy and updates the existing link URL", asyn
   await manager.publishEntry(member.guild);
   assert.equal(captures.length, 1);
   const entry = captures[0];
-  assert.match(entry.content, /på nettsiden for å få tilgang/);
-  assert.match(entry.content, /fornavn og initial for siste etternavn/);
-  assert.doesNotMatch(entry.content, /familie|foresatt/i);
+  assert.match(entry.content, /Discord-kontoen din være koblet til NTLAN-kontoen din på ntlan\.no/);
+  assert.match(entry.content, /«Sjekk tilgang» her/);
+  assert.match(entry.content, /initialer for resten av navnet/);
+  assert.match(entry.content, /Velkommen til NTLAN/);
+  assert.match(entry.content, /under 18.*foreldrene dine har fått innloggingen din på e-post/i);
+  assert.doesNotMatch(entry.content, /spør foresatt/i);
+  assert.doesNotMatch(entry.content, /familie/i);
   const buttons = entry.components.flatMap((row) => row.toJSON().components);
   assert.ok(buttons.some((button) => button.label === "Åpne nettsiden" && button.url === "https://new-login.example/discord"));
   assert.ok(buttons.some((button) => button.label === "Sjekk tilgang" && button.custom_id === "check-registration-access"));
+});
+
+test("message catalog allows access copy overrides and falls back for missing keys", () => {
+  const messages = parseBotMessages({ access: {
+    entry: "Custom welcome",
+    button: { verified: "Custom success" }
+  } });
+  assert.equal(messages.access.entry, "Custom welcome");
+  assert.equal(messages.access.button.verified, "Custom success");
+  assert.match(messages.access.button["not-linked"], /Discord-koblingen/);
+  assert.match(messages.access.button["dry-run-linked"], /koblingen din er funnet.*forhåndsvisning/i);
+  assert.equal(messages.access.openWebsiteLabel, "Åpne nettsiden");
+});
+
+test("command and audit messages are editable from the message catalog with placeholder values", () => {
+  const messages = parseBotMessages({
+    commands: { "giveAccess.complete": "Gitt til <@{userId}> med {nickname}" },
+    logs: { "access.nicknameSet": "Navn for {username}: {nickname}" }
+  });
+  assert.equal(getBotText("giveAccess.complete", { userId: "123", nickname: "Ada A." }, "commands", messages),
+    "Gitt til <@123> med Ada A.");
+  assert.equal(getBotText("access.nicknameSet", { username: "ada", nickname: "Ada A." }, "logs", messages),
+    "Navn for ada: Ada A.");
+  assert.ok(getBotText("botSettings.notLoaded", {}, "commands", messages).length > 0);
+});
+
+test("messages.json includes every built-in command and audit message and keeps the current welcome copy", async () => {
+  const raw = JSON.parse(await readFile(join(process.cwd(), "messages.json"), "utf8")) as {
+    commands?: Record<string, unknown>;
+    logs?: Record<string, unknown>;
+    access?: { entry?: string };
+  };
+  const parsed = parseBotMessages(raw);
+  for (const key of Object.keys(parsed.commands)) assert.equal(typeof raw.commands?.[key], "string", `Missing messages.json commands.${key}`);
+  for (const key of Object.keys(parsed.logs)) assert.equal(typeof raw.logs?.[key], "string", `Missing messages.json logs.${key}`);
+  assert.equal(parsed.access.entry, raw.access?.entry);
+});
+
+test("CS notification templates validate placeholders and require configured values", () => {
+  const messages = parseBotMessages({ cs: { notifications: {
+    custom: { label: "Custom", template: "Starter om {minutes} minutter", required: ["minutes"] },
+    invalid: { label: "Invalid", template: "Ping {everyone}", required: ["everyone"] }
+  } } });
+  assert.equal(renderCsNotification("custom", { minutes: "10" }, messages.cs.notifications), "Starter om 10 minutter");
+  assert.throws(() => renderCsNotification("custom", {}, messages.cs.notifications), /Missing notification value/);
+  assert.equal(messages.cs.notifications.invalid, undefined);
 });
 
 test("startup validation identifies exact missing roles, hierarchy and permissions", async () => {
@@ -370,9 +575,14 @@ test("voice access uses role or crew exemption only, and checks guild scope", ()
   const verified = fixture();
   (verified.member.roles.cache as Collection<string, unknown>).set(settings.accessRoleId, {});
   assert.equal(manager.canUseVoice(verified.member), true);
+  const manual = fixture();
+  (manual.member.roles.cache as Collection<string, unknown>).set(settings.manualAccessRoleId, {});
+  assert.equal(manager.canUseVoice(manual.member), true);
   const outside = fixture();
   Object.assign(outside.member.guild, { id: "123456789012345686" });
   assert.equal(manager.canUseVoice(outside.member), false);
+  const dryRun = new AccessManager({ ...settings, dryRun: true }, async () => new Map());
+  assert.equal(dryRun.canUseVoice(fixture().member), false);
 });
 
 test("concurrent checks share processing and API failure causes no mutations", async () => {
@@ -394,8 +604,9 @@ test("concurrent checks share processing and API failure causes no mutations", a
 test("manually protected voice category needs no configured category ID list", () => {
   const manager = new AccessManager(settings, async () => new Map());
   const overwrites = new Collection([
-    [settings.guildId, { allow: new PermissionsBitField(), deny: new PermissionsBitField(PermissionFlagsBits.ViewChannel) }],
-    [settings.accessRoleId, { allow: new PermissionsBitField(PermissionFlagsBits.ViewChannel), deny: new PermissionsBitField() }]
+    [settings.guildId, { allow: new PermissionsBitField(), deny: new PermissionsBitField([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect]) }],
+    [settings.accessRoleId, { allow: new PermissionsBitField([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect]), deny: new PermissionsBitField() }],
+    [settings.manualAccessRoleId, { allow: new PermissionsBitField([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect]), deny: new PermissionsBitField() }]
   ]);
   const category = { guild: { id: settings.guildId }, permissionOverwrites: { cache: overwrites } } as unknown as CategoryChannel;
   assert.equal(manager.isVoiceCategoryProtected(category), true);
@@ -406,6 +617,15 @@ test("manually protected voice category needs no configured category ID list", (
   overwrites.get(settings.accessRoleId)!.allow.remove(PermissionFlagsBits.ViewChannel);
   assert.equal(manager.isVoiceCategoryProtected(category), false);
   overwrites.get(settings.accessRoleId)!.allow.add(PermissionFlagsBits.ViewChannel);
+  overwrites.get(settings.manualAccessRoleId)!.allow.remove(PermissionFlagsBits.ViewChannel);
+  assert.equal(manager.isVoiceCategoryProtected(category), false);
+  overwrites.get(settings.manualAccessRoleId)!.allow.add(PermissionFlagsBits.ViewChannel);
+  overwrites.get(settings.accessRoleId)!.allow.remove(PermissionFlagsBits.Connect);
+  assert.equal(manager.isVoiceCategoryProtected(category), false);
+  overwrites.get(settings.accessRoleId)!.allow.add(PermissionFlagsBits.Connect);
+  overwrites.get(settings.manualAccessRoleId)!.allow.remove(PermissionFlagsBits.Connect);
+  assert.equal(manager.isVoiceCategoryProtected(category), false);
+  overwrites.get(settings.manualAccessRoleId)!.allow.add(PermissionFlagsBits.Connect);
   Object.assign(category.guild, { id: "123456789012345686" });
   assert.equal(manager.isVoiceCategoryProtected(category), false);
 });

@@ -1,6 +1,7 @@
 import { MessageFlags, PermissionFlagsBits, SlashCommandBuilder, type ChatInputCommandInteraction } from "discord.js";
 import { isCrewMember } from "../accessManager.js";
 import { restoreAccessPermissions } from "../accessPermissions.js";
+import { getBotText } from "../messages.js";
 
 export const setupAccessCommand = {
   data: new SlashCommandBuilder()
@@ -14,17 +15,17 @@ export const setupAccessCommand = {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const { accessManager } = await import("../accessRuntime.js");
     if (!accessManager || !interaction.guild || interaction.guildId !== accessManager.settings.guildId) {
-      await interaction.editReply("Tilgangskontrollen er ikke konfigurert for denne serveren.");
+      await interaction.editReply(getBotText("setupAccess.notConfigured"));
       return;
     }
     const member = await interaction.guild.members.fetch(interaction.user.id);
     if (!isCrewMember(member, accessManager.settings.crewRoleId)) {
-      await interaction.editReply("Bare Crew og høyere kan bruke denne kommandoen.");
+      await interaction.editReply(getBotText("setupAccess.crewOnly"));
       return;
     }
     const restore = interaction.options.getBoolean("gjenopprett") ?? false;
     if (restore && !interaction.options.getBoolean("bekreft")) {
-      await interaction.editReply("Denne handlingen endrer kanalrettigheter. Bruk bekreft:true etter at oppsettet er kontrollert.");
+      await interaction.editReply(getBotText("setupAccess.confirmRestore"));
       return;
     }
     try {
@@ -35,12 +36,12 @@ export const setupAccessCommand = {
         await accessManager.publishEntry(interaction.guild);
       }
       await interaction.editReply(accessManager.settings.dryRun
-        ? "Tørrkjøring fullført. Ingen meldinger eller kanalrettigheter ble endret."
-        : restore ? `Rettigheter gjenopprettet for ${count} kanaler. Navn og roller er ikke tilbakestilt.`
-          : `Inngangsmeldingen er publisert med nettsidelenken ${accessManager.settings.websiteUrl}. Kanalrettighetene administreres manuelt i Discord og er ikke endret.`);
+        ? getBotText("setupAccess.dryRun")
+        : restore ? getBotText("setupAccess.restored", { count })
+          : getBotText("setupAccess.published", { websiteUrl: accessManager.settings.websiteUrl }));
     } catch (error) {
-      console.error("Access setup failed; check configuration and access-channel permissions.");
-      await interaction.editReply(error instanceof Error ? error.message : "Oppsettet feilet.");
+      console.error(getBotText("setupAccess.failed", {}, "logs"));
+      await interaction.editReply(getBotText("setupAccess.failed"));
     }
   }
 };

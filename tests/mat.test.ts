@@ -112,3 +112,34 @@ test("team lookup parses SteamID64 rosters without retaining player names", asyn
     players: [{ steamId: "76561198000000001" }, { steamId: null }]
   }]);
 });
+
+test("match detail is read-only, decodes the slug, and keeps only Steam roster fields", async () => {
+  const client = new MatClient({ baseUrl, apiToken: token }, async (input, init) => {
+    assert.equal(String(input), `${baseUrl}/api/matches/round%2Fmatch-1`);
+    assert.equal(init?.method, "GET");
+    assert.equal((init?.headers as Record<string, string>).Authorization, `Bearer ${token}`);
+    return Response.json({
+      success: true,
+      match: {
+        id: 12,
+        slug: "round/match-1",
+        status: "live",
+        game: "cs2",
+        round: 2,
+        tournament: { id: 9 },
+        team1: { id: "team-1", name: "private", tag: "A", players: [{ steam_id64: "76561198000000001", name: "private player" }] },
+        team2: { id: "team-2", name: "private", tag: "B", players: [{ steam_id64: "76561198000000002", name: "private player" }] },
+        connect: { password: "private-server-password" }
+      }
+    });
+  });
+  assert.deepEqual(await client.getMatch("round/match-1"), {
+    id: "12",
+    slug: "round/match-1",
+    status: "live",
+    tournamentId: "9",
+    round: 2,
+    team1: { id: "team-1", name: "private", tag: "A", steamIds: ["76561198000000001"] },
+    team2: { id: "team-2", name: "private", tag: "B", steamIds: ["76561198000000002"] }
+  });
+});

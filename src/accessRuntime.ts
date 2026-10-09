@@ -9,8 +9,8 @@ function createAccessManager(): AccessManager | undefined {
     throw new AccessConfigurationError("Set all four REGISTRATION API/token/client settings or leave all empty.");
   }
   if (!config.registrationApiUrl) return undefined;
-  if (!config.accessRoleId || !config.crewRoleId || !config.accessChannelId || !config.registrationUrl) {
-    throw new AccessConfigurationError("Set ACCESS_ROLE_ID, CREW_ROLE_ID, ACCESS_CHANNEL_ID and REGISTRATION_URL for registration sync.");
+  if (!config.accessRoleId || !config.manualAccessRoleId || !config.crewRoleId || !config.accessChannelId || !config.registrationUrl) {
+    throw new AccessConfigurationError("Set ACCESS_ROLE_ID, MANUAL_ACCESS_ROLE_ID, CREW_ROLE_ID, ACCESS_CHANNEL_ID and REGISTRATION_URL for registration sync.");
   }
   const api = new RegistrationClient({
     apiUrl: config.registrationApiUrl,
@@ -21,6 +21,7 @@ function createAccessManager(): AccessManager | undefined {
   return new AccessManager({
     guildId: config.guildId,
     accessRoleId: config.accessRoleId,
+    manualAccessRoleId: config.manualAccessRoleId,
     crewRoleId: config.crewRoleId,
     channelId: config.accessChannelId,
     websiteUrl: config.registrationUrl,

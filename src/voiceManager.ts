@@ -9,7 +9,10 @@ import {
   type VoiceState
 } from "discord.js";
 import { config } from "./config.js";
+import { sendCrewLogMessage } from "./crewLog.js";
 import { accessInitializationError, accessManager } from "./accessRuntime.js";
+import { createTemporaryVoiceOverwrites } from "./voicePermissions.js";
+import { getBotText } from "./messages.js";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -18,23 +21,38 @@ const temporaryChannelOwners = new Map<string, string>();
 const deleteTimers = new Map<string, NodeJS.Timeout>();
 const ownersPath = join(process.cwd(), "data", "voice-owners.json");
 let ownerSave: Promise<void> = Promise.resolve();
+let voiceManagerEnabled = Boolean(config.joinToCreateChannelId);
+const warnedUnprotectedCategories = new Set<string>();
+
+export function setVoiceManagerEnabled(enabled: boolean): void {
+  voiceManagerEnabled = enabled;
+  if (!enabled) {
+    for (const timer of deleteTimers.values()) clearTimeout(timer);
+    deleteTimers.clear();
+  }
+}
 
 async function loadVoiceOwners(): Promise<void> {
-  if (!accessManager || accessManager.settings.dryRun) return;
   try {
     const owners: unknown = JSON.parse(await readFile(ownersPath, "utf8"));
     if (!Array.isArray(owners) || owners.some((entry) => !Array.isArray(entry) || entry.length !== 2
       || entry.some((id) => typeof id !== "string" || !/^\d{17,20}$/.test(id)))) {
       throw new Error("Invalid voice owner data.");
     }
-    for (const [channelId, ownerId] of owners as [string, string][]) temporaryChannelOwners.set(channelId, ownerId);
+    for (const [channelId, ownerId] of owners as [string, string][]) {
+      temporaryChannelIds.add(channelId);
+      temporaryChannelOwners.set(channelId, ownerId);
+    }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
 }
 
+export async function restoreTemporaryChannelOwners(): Promise<void> {
+  await loadVoiceOwners();
+}
+
 async function saveVoiceOwners(): Promise<void> {
-  if (!accessManager || accessManager.settings.dryRun) return;
   const snapshot = JSON.stringify([...temporaryChannelOwners]);
   const task = ownerSave.catch(() => undefined).then(async () => {
     await mkdir(join(process.cwd(), "data"), { recursive: true });
@@ -46,6 +64,7 @@ async function saveVoiceOwners(): Promise<void> {
 }
 
 export async function handleVoiceStateUpdate(oldState: VoiceState, newState: VoiceState): Promise<void> {
+  if (!voiceManagerEnabled) return;
   await handleJoinToCreate(newState);
   scheduleDeleteIfTemporaryChannelIsEmpty(oldState.channel);
   clearDeleteTimerIfChannelHasMembers(newState.channel);
@@ -129,7 +148,7 @@ export async function cleanupEmptyVoiceChannelsOnStartup(client: Client): Promis
 }
 
 async function handleJoinToCreate(newState: VoiceState): Promise<void> {
-  if (!config.joinToCreateChannelId || newState.channelId !== config.joinToCreateChannelId || !newState.member) {
+  if (!voiceManagerEnabled || !config.joinToCreateChannelId || newState.channelId !== config.joinToCreateChannelId || !newState.member) {
     return;
   }
 
@@ -141,7 +160,13 @@ async function createTemporaryChannelForMember(member: GuildMember, parent: Cate
   if (accessManager && !accessManager.canUseVoice(member)) return;
   if (accessManager && !accessManager.settings.dryRun
     && !accessManager.isVoiceCategoryProtected(parent)) {
-    throw new Error("In Discord, deny View Channel for @everyone and allow it for the access role on the join-to-create category.");
+    const categoryId = parent?.id ?? "no-category";
+    if (!warnedUnprotectedCategories.has(categoryId)) {
+      warnedUnprotectedCategories.add(categoryId);
+      const warning = "Join-to-create category may have incorrect @everyone/access-role View Channel or Connect overwrites; continuing and granting the creator access to their new channel.";
+      console.warn(warning);
+      void sendCrewLogMessage(member.client, warning);
+    }
   }
   const channel = await member.guild.channels.create({
     name: `${member.displayName} sin kanal`,
@@ -149,17 +174,11 @@ async function createTemporaryChannelForMember(member: GuildMember, parent: Cate
     parent,
     // Bruker serverens gjeldende maks bitrate, som stiger automatisk med boost-niva.
     bitrate: member.guild.maximumBitrate,
-    permissionOverwrites: [
-      ...(parent ? [...parent.permissionOverwrites.cache.values()].map((overwrite) => ({
-        id: overwrite.id, type: overwrite.type, allow: overwrite.allow.bitfield, deny: overwrite.deny.bitfield
-      })) : []),
-      ...(!accessManager || accessManager.settings.dryRun ? [
-        {
-          id: member.id,
-          allow: [PermissionFlagsBits.ManageChannels]
-        }
-      ] : [])
-    ],
+    permissionOverwrites: createTemporaryVoiceOverwrites(
+      parent ? [...parent.permissionOverwrites.cache.values()] : [],
+      member.id,
+      !accessManager || accessManager.settings.dryRun
+    ),
     reason: "Join-to-create temporary voice channel"
   });
 
@@ -168,21 +187,22 @@ async function createTemporaryChannelForMember(member: GuildMember, parent: Cate
   await saveVoiceOwners();
   await sortTemporaryChannels(channel);
   await member.voice.setChannel(channel);
+  void sendCrewLogMessage(member.client, getBotText("voice.channelCreated", {}, "logs"));
 }
 
 export async function renameTemporaryChannel(channel: VoiceBasedChannel, userId: string, newName: string): Promise<string> {
   if (!temporaryChannelIds.has(channel.id)) {
-    throw new Error("Du ma sta i en midlertidig voice-kanal som boten har laget.");
+    throw new Error(getBotText("voiceName.notTemporary"));
   }
 
   const ownerId = temporaryChannelOwners.get(channel.id);
 
   const persistedOwnerId = channel.permissionOverwrites.cache.find((overwrite) => overwrite.type === 1 && overwrite.allow.has(PermissionFlagsBits.ManageChannels))?.id;
   if ((ownerId ?? persistedOwnerId) && (ownerId ?? persistedOwnerId) !== userId) {
-    throw new Error("Bare personen som laget kanalen kan endre navnet.");
+    throw new Error(getBotText("voiceName.notOwner"));
   }
   if (accessManager && !accessManager.settings.dryRun && !ownerId && !persistedOwnerId) {
-    throw new Error("Kanaleieren er ikke kjent etter omstart. Kontakt Crew for navneendring.");
+    throw new Error(getBotText("voiceName.ownerUnknown"));
   }
 
   const sanitizedName = sanitizeChannelName(newName);
@@ -230,13 +250,14 @@ async function deleteTemporaryChannel(channel: VoiceBasedChannel): Promise<void>
   temporaryChannelOwners.delete(channel.id);
   await saveVoiceOwners();
   await channel.delete("Temporary voice channel is empty.");
+  void sendCrewLogMessage(channel.client, getBotText("voice.channelDeleted", {}, "logs"));
 }
 
 function sanitizeChannelName(name: string): string {
   const sanitizedName = name.trim().replace(/\s+/g, " ").slice(0, 80);
 
   if (!sanitizedName) {
-    throw new Error("Kanalnavnet kan ikke vaere tomt.");
+    throw new Error(getBotText("voiceName.empty"));
   }
 
   return sanitizedName;

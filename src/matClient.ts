@@ -34,6 +34,23 @@ export interface MatTeam {
   players: Array<{ steamId: string | null }>;
 }
 
+export interface MatMatchTeamSnapshot {
+  id: string;
+  name: string | null;
+  tag: string | null;
+  steamIds: string[];
+}
+
+export interface MatMatchSnapshot {
+  id: string;
+  slug: string;
+  status: string;
+  tournamentId: string;
+  round: number | null;
+  team1: MatMatchTeamSnapshot | null;
+  team2: MatMatchTeamSnapshot | null;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -137,6 +154,50 @@ export class MatClient {
             : null
         };
       })
+    };
+  }
+
+  async getMatch(matchSlug: string): Promise<MatMatchSnapshot> {
+    if (!matchSlug.trim() || matchSlug.length > 200) throw new Error("MAT match slug is invalid.");
+    const payload = await this.get(`/api/matches/${encodeURIComponent(matchSlug)}`);
+    const match = isRecord(payload) && isRecord(payload.match) ? payload.match : payload;
+    if (!isRecord(match)) throw new Error("MAT API returned an invalid match response.");
+    const id = typeof match.id === "string" || typeof match.id === "number" ? String(match.id) : null;
+    const tournamentId = isRecord(match.tournament)
+      && (typeof match.tournament.id === "string" || typeof match.tournament.id === "number")
+      ? String(match.tournament.id)
+      : null;
+    if (!id || match.slug !== matchSlug || !tournamentId || typeof match.status !== "string"
+      || (match.game !== undefined && match.game !== "cs2")) {
+      throw new Error("MAT API returned invalid match metadata.");
+    }
+
+    const parseTeam = (value: unknown): MatMatchTeamSnapshot | null => {
+      if (value === undefined || value === null) return null;
+      if (!isRecord(value) || (typeof value.id !== "string" && typeof value.id !== "number")
+        || !Array.isArray(value.players)) throw new Error("MAT API returned an invalid match team.");
+      const steamIds = value.players.map(player => {
+        if (!isRecord(player) || typeof player.steam_id64 !== "string" || !/^7656119\d{10}$/.test(player.steam_id64)) {
+          throw new Error("MAT API returned an invalid match player.");
+        }
+        return player.steam_id64;
+      });
+      return {
+        id: String(value.id),
+        name: typeof value.name === "string" ? value.name : null,
+        tag: typeof value.tag === "string" ? value.tag : null,
+        steamIds
+      };
+    };
+
+    return {
+      id,
+      slug: matchSlug,
+      status: match.status,
+      tournamentId,
+      round: Number.isSafeInteger(match.round) ? match.round as number : null,
+      team1: parseTeam(match.team1),
+      team2: parseTeam(match.team2)
     };
   }
 

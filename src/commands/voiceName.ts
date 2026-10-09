@@ -1,4 +1,5 @@
 import { MessageFlags, SlashCommandBuilder, type ChatInputCommandInteraction } from "discord.js";
+import { getBotText } from "../messages.js";
 
 export const voiceNameCommand = {
   data: new SlashCommandBuilder()
@@ -15,7 +16,7 @@ export const voiceNameCommand = {
 
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guild) {
-      await interaction.reply({ content: "Denne kommandoen kan bare brukes pa en server.", flags: MessageFlags.Ephemeral });
+      await interaction.reply({ content: getBotText("voiceName.guildOnly"), flags: MessageFlags.Ephemeral });
       return;
     }
 
@@ -23,7 +24,7 @@ export const voiceNameCommand = {
     const channel = member.voice.channel;
 
     if (!channel) {
-      await interaction.reply({ content: "Du ma sta i voice-kanalen du vil endre navn pa.", flags: MessageFlags.Ephemeral });
+      await interaction.reply({ content: getBotText("voiceName.notInVoice"), flags: MessageFlags.Ephemeral });
       return;
     }
 
@@ -32,9 +33,16 @@ export const voiceNameCommand = {
     try {
       const { renameTemporaryChannel } = await import("../voiceManager.js");
       const newName = await renameTemporaryChannel(channel, interaction.user.id, requestedName);
-      await interaction.reply({ content: `Kanalnavnet er endret til ${newName}.`, flags: MessageFlags.Ephemeral });
+      await interaction.reply({ content: getBotText("voiceName.changed", { channelName: newName }), flags: MessageFlags.Ephemeral });
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Kunne ikke endre kanalnavnet.";
+      const knownErrors = new Set([
+        getBotText("voiceName.notTemporary"),
+        getBotText("voiceName.notOwner"),
+        getBotText("voiceName.ownerUnknown"),
+        getBotText("voiceName.empty")
+      ]);
+      const message = error instanceof Error && knownErrors.has(error.message)
+        ? error.message : getBotText("voiceName.failed");
       await interaction.reply({ content: message, flags: MessageFlags.Ephemeral });
     }
   }

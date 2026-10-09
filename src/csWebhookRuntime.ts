@@ -1,7 +1,7 @@
 import { createMatWebhookReceiver } from "./csWebhookServer.js";
 import type { MatWebhookEvent } from "./csWebhookServer.js";
 import { CsEventStore } from "./csEventStore.js";
-import type { MatClient, MatTeam } from "./matClient.js";
+import type { MatBracketSummary, MatClient, MatMatchSnapshot, MatTeam } from "./matClient.js";
 import { planCsTeamRooms } from "./csTournamentSync.js";
 import type { CsRegistrationSource } from "./csSyncRuntime.js";
 import type { RegisteredPerson } from "./registrationClient.js";
@@ -12,6 +12,7 @@ export interface CsWebhookDryRunReport {
   eventType: string;
   tournament: "main" | "wingman";
   plannedRooms: number;
+  updatedRooms?: number;
   skippedTeams: number;
   unmatchedPlayers: number;
   ambiguousSteamIds: number;
@@ -32,13 +33,48 @@ export interface CsWebhookRuntimeOptions {
   report?: (summary: CsWebhookDryRunReport) => void;
 }
 
+const terminalMatchStatuses = new Set(["completed", "cancelled", "canceled", "bye", "reset"]);
+const activeWingmanStatuses = new Set(["ready", "loaded", "live", "in_progress", "playing"]);
+const waitingWingmanStatuses = new Set(["pending", "waiting", "scheduled"]);
+
+export function selectRecoverableWingmanMatches(bracket: MatBracketSummary): string[] | null {
+  if (bracket.tournament.type !== "shuffle" || bracket.tournament.teamSize !== 2) return null;
+  if (terminalMatchStatuses.has(bracket.tournament.status.toLowerCase())) return [];
+  const relevant = bracket.matches.filter(match => match.slug && match.round !== null && match.status !== null);
+  if (relevant.some(match => !terminalMatchStatuses.has(match.status!.toLowerCase())
+    && !activeWingmanStatuses.has(match.status!.toLowerCase())
+    && !waitingWingmanStatuses.has(match.status!.toLowerCase()))) return null;
+  const open = relevant.filter(match => !terminalMatchStatuses.has(match.status!.toLowerCase()));
+  const latestOpenRound = open.reduce((highest, match) => Math.max(highest, match.round ?? 0), 0);
+  if (!latestOpenRound) return [];
+  const active = open.filter(match => match.round === latestOpenRound && activeWingmanStatuses.has(match.status!.toLowerCase()));
+  if (active.length > 1) return null;
+  return active.map(match => match.slug!).slice(0, 1);
+}
+
+export function toRecoveredWingmanEvent(match: MatMatchSnapshot): MatWebhookEvent {
+  return {
+    id: `recovery:${match.tournamentId}:${match.id}:${match.status}`,
+    type: "match.ready",
+    test: false,
+    sequence: match.round ?? 0,
+    match: {
+      id: match.id,
+      slug: match.slug,
+      status: match.status,
+      tournamentId: match.tournamentId,
+      team1: match.team1,
+      team2: match.team2
+    }
+  };
+}
+
 export class CsWebhookRuntime {
   private readonly store: CsEventStore;
   private readonly report: (summary: CsWebhookDryRunReport) => void;
   private receiver: ReturnType<typeof createMatWebhookReceiver> | undefined;
   private retryTimer: NodeJS.Timeout | undefined;
   private processing = false;
-  private syncingRoles = false;
 
   constructor(private readonly options: CsWebhookRuntimeOptions) {
     this.store = options.store ?? new CsEventStore();
@@ -57,25 +93,51 @@ export class CsWebhookRuntime {
     }
     await this.store.load();
     await this.options.discordManager?.load();
-    if (!this.options.dryRun && this.options.discordManager && this.options.mat && this.options.mainTournamentId) {
+    if (this.options.discordManager && this.options.mat && this.options.mainTournamentId && this.options.wingmanTournamentId) {
       try {
-        const [bracket, teams, participants] = await Promise.all([
+        const [mainBracket, wingmanBracket, teams, participants] = await Promise.all([
           this.options.mat.getBracketSummary(this.options.mainTournamentId),
+          this.options.mat.getBracketSummary(this.options.wingmanTournamentId),
           this.options.mat.getTeams(),
           this.getCsParticipants()
         ]);
-        const summary = await this.options.discordManager.reconcileMainTournamentRooms(
-          String(this.options.mainTournamentId), bracket, teams, participants, false
+        const mainSummary = await this.options.discordManager.reconcileMainTournamentRooms(
+          String(this.options.mainTournamentId), mainBracket, teams, participants, this.options.dryRun ?? true
         );
-        console.log("CS main rooms prepared", {
-          plannedRooms: summary.plannedRooms,
-          updatedRooms: summary.updatedRooms,
-          skippedTeams: summary.skippedTeams,
-          unmatchedPlayers: summary.unmatchedPlayers,
-          ambiguousSteamIds: summary.ambiguousSteamIds
+        console.log("CS main startup recovery", {
+          plannedRooms: mainSummary.plannedRooms,
+          updatedRooms: mainSummary.updatedRooms,
+          skippedTeams: mainSummary.skippedTeams,
+          unmatchedPlayers: mainSummary.unmatchedPlayers,
+          ambiguousSteamIds: mainSummary.ambiguousSteamIds
         });
+        const activeSlugs = selectRecoverableWingmanMatches(wingmanBracket);
+        if (activeSlugs === null) {
+          console.error("Wingman startup recovery skipped; tournament format or active match state is ambiguous.");
+        } else if (activeSlugs.length === 1) {
+          const match = await this.options.mat.getMatch(activeSlugs[0]!);
+          if (match.tournamentId !== String(this.options.wingmanTournamentId)) {
+            console.error("Wingman startup recovery skipped; active match belongs to another tournament.");
+          } else {
+            const summary = await this.options.discordManager.reconcileWingmanSnapshot(
+              String(this.options.wingmanTournamentId), match, participants, this.options.dryRun ?? true
+            );
+            console.log("CS Wingman startup recovery", {
+              activeMatchCount: 1,
+              plannedRooms: summary.plannedRooms,
+              skippedPairs: summary.skippedTeams,
+              unmatchedPlayers: summary.unmatchedPlayers,
+              ambiguousSteamIds: summary.ambiguousSteamIds
+            });
+          }
+        } else {
+          const summary = await this.options.discordManager.reconcileWingmanSnapshot(
+            String(this.options.wingmanTournamentId), null, participants, this.options.dryRun ?? true
+          );
+          console.log("CS Wingman startup recovery", { activeMatchCount: 0, plannedRooms: summary.plannedRooms });
+        }
       } catch {
-        console.error("CS main rooms could not be prepared from MAT; ready events can still prepare active match rooms.");
+        console.error("CS startup recovery failed; existing room assignments were preserved and webhook events can still update them.");
       }
     }
     const receiver = createMatWebhookReceiver({
@@ -95,12 +157,8 @@ export class CsWebhookRuntime {
       });
     });
     this.receiver = receiver;
-    this.retryTimer = setInterval(() => {
-      void this.processPending();
-      void this.syncParticipantRoles();
-    }, this.options.intervalMs);
+    this.retryTimer = setInterval(() => void this.processPending(), this.options.intervalMs);
     void this.processPending();
-    void this.syncParticipantRoles();
   }
 
   async stop(): Promise<void> {
@@ -139,23 +197,6 @@ export class CsWebhookRuntime {
     }
   }
 
-  private async syncParticipantRoles(): Promise<void> {
-    if (this.syncingRoles || !this.receiver || !this.options.discordManager) return;
-    this.syncingRoles = true;
-    try {
-      const participants = await this.getCsParticipants();
-      const summary = await this.options.discordManager.reconcileParticipantRoles(
-        participants,
-        this.options.dryRun ?? true
-      );
-      console.log("CS participant role sync", summary);
-    } catch {
-      console.error("CS participant role sync failed; existing roles were preserved.");
-    } finally {
-      this.syncingRoles = false;
-    }
-  }
-
   private tournamentFor(event: MatWebhookEvent): "main" | "wingman" | null {
     if (this.options.mainTournamentId && event.match.tournamentId === String(this.options.mainTournamentId)) return "main";
     if (this.options.wingmanTournamentId && event.match.tournamentId === String(this.options.wingmanTournamentId)) return "wingman";
@@ -183,6 +224,7 @@ export class CsWebhookRuntime {
         eventType: event.type,
         tournament,
         plannedRooms: summary.plannedRooms,
+        updatedRooms: summary.updatedRooms,
         skippedTeams: summary.skippedTeams,
         unmatchedPlayers: summary.unmatchedPlayers,
         ambiguousSteamIds: summary.ambiguousSteamIds
@@ -190,7 +232,7 @@ export class CsWebhookRuntime {
       return;
     }
     if (event.type !== "match.ready") {
-      this.report({ eventType: event.type, tournament, plannedRooms: 0, skippedTeams: 0, unmatchedPlayers: 0, ambiguousSteamIds: 0 });
+      this.report({ eventType: event.type, tournament, plannedRooms: 0, updatedRooms: 0, skippedTeams: 0, unmatchedPlayers: 0, ambiguousSteamIds: 0 });
       return;
     }
     const participants = await this.getCsParticipants();
@@ -207,6 +249,7 @@ export class CsWebhookRuntime {
       eventType: event.type,
       tournament,
       plannedRooms: plan.rooms.length,
+      updatedRooms: 0,
       skippedTeams: plan.skippedTeamCount,
       unmatchedPlayers: plan.unmatchedParticipantCount,
       ambiguousSteamIds: plan.ambiguousSteamIdCount

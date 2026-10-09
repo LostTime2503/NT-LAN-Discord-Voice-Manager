@@ -11,4 +11,6 @@ data/cs-owned-voice-channels.json
 data/cs-owned-voice-channels.json.tmp
 data/manual-access-overrides.json
 data/manual-access-overrides.json.tmp
+data/bot-settings.json
+data/bot-settings.json.tmp
 npm-debug.log*

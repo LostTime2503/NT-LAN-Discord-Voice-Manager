@@ -4,6 +4,7 @@ import {
 } from "discord.js";
 import { createNickname, type RegisteredPerson } from "./registrationClient.js";
 import type { ManualAccessOverride, ManualOverrideStore } from "./manualOverrides.js";
+import { getBotMessages } from "./messages.js";
 
 export const ACCESS_BUTTON_ID = "check-registration-access";
 
@@ -17,6 +18,7 @@ const administrativePermissions = [
 export interface AccessSettings {
   guildId: string;
   accessRoleId: string;
+  manualAccessRoleId: string;
   crewRoleId: string;
   channelId: string;
   websiteUrl: string;
@@ -24,7 +26,12 @@ export interface AccessSettings {
   intervalMs: number;
 }
 
-export type AccessResult = "exempt" | "not-linked" | "revoked" | "manual-name" | "cannot-rename" | "dry-run" | "verified" | "manual-override";
+export type AccessResult = "exempt" | "not-linked" | "revoked" | "manual-name" | "cannot-rename" | "dry-run" | "dry-run-linked" | "verified" | "manual-override";
+export interface AccessAuditAction {
+  username: string;
+  action: "nickname-set" | "website-role-granted" | "manual-role-granted" | "manual-role-promoted" | "website-role-revoked" | "manual-role-revoked";
+  nickname?: string;
+}
 
 export class AccessConfigurationError extends Error {}
 
@@ -102,6 +109,9 @@ export class AccessManager {
   private readonly pending = new Map<string, Promise<AccessResult>>();
   private timer: ReturnType<typeof setInterval> | undefined;
   private warnedPermissions = "";
+  private summaryReporter: (summary: { dryRun: boolean; counts: Partial<Record<AccessResult | "failed", number>> }) => void
+    = summary => console.log("Access sync summary", summary);
+  private actionReporter: (action: AccessAuditAction) => void = action => console.info("Access sync action", action);
 
   constructor(
     readonly settings: AccessSettings,
@@ -120,11 +130,16 @@ export class AccessManager {
     await guild.roles.fetch();
     const me = await guild.members.fetchMe();
     const accessRole = guild.roles.cache.get(this.settings.accessRoleId);
+    const manualAccessRole = guild.roles.cache.get(this.settings.manualAccessRoleId);
     const crewRole = guild.roles.cache.get(this.settings.crewRoleId);
     if (!crewRole) throw new AccessConfigurationError("CREW_ROLE_ID finnes ikke pa denne serveren. Kopier ID-en fra serverens Crew-rolle.");
     if (!accessRole) throw new AccessConfigurationError("ACCESS_ROLE_ID finnes ikke pa denne serveren. Kopier ID-en fra serverens discord-koblet-rolle.");
     if (accessRole.managed || accessRole.id === guild.id) {
       throw new AccessConfigurationError("ACCESS_ROLE_ID ma vaere en egen vanlig rolle, ikke botrolle eller @everyone.");
+    }
+    if (!manualAccessRole) throw new AccessConfigurationError("MANUAL_ACCESS_ROLE_ID finnes ikke pa denne serveren.");
+    if (manualAccessRole.managed || manualAccessRole.id === guild.id || manualAccessRole.id === accessRole.id) {
+      throw new AccessConfigurationError("MANUAL_ACCESS_ROLE_ID ma vaere en egen vanlig rolle, forskjellig fra ACCESS_ROLE_ID.");
     }
     const elevated = administrativePermissions.filter((name) => (accessRole.permissions.bitfield & PermissionFlagsBits[name]) !== 0n);
     const warning = elevated.join(", ");
@@ -132,11 +147,11 @@ export class AccessManager {
       console.warn(`WARNING: discord-koblet has administrative permissions: ${warning}. Discord remains authoritative; the bot will not change them. Administrator bypasses hidden channels.`);
     }
     this.warnedPermissions = warning;
-    if (accessRole.comparePositionTo(crewRole) >= 0) {
-      throw new AccessConfigurationError("Flytt discord-koblet-rollen under Crew i rollelisten.");
+    if (accessRole.comparePositionTo(crewRole) >= 0 || manualAccessRole.comparePositionTo(crewRole) >= 0) {
+      throw new AccessConfigurationError("Flytt tilgangsrollene under Crew i rollelisten.");
     }
-    if (me.roles.highest.comparePositionTo(accessRole) <= 0) {
-      throw new AccessConfigurationError("Flytt botrollen over discord-koblet i rollelisten.");
+    if (me.roles.highest.comparePositionTo(accessRole) <= 0 || me.roles.highest.comparePositionTo(manualAccessRole) <= 0) {
+      throw new AccessConfigurationError("Flytt botrollen over tilgangsrollene i rollelisten.");
     }
     if (!me.permissions.has(PermissionFlagsBits.ManageNicknames)) {
       throw new AccessConfigurationError("Botrollen mangler Manage Nicknames (administrer kallenavn).");
@@ -170,6 +185,16 @@ export class AccessManager {
     this.timer = undefined;
   }
 
+  setSummaryReporter(
+    reporter: (summary: { dryRun: boolean; counts: Partial<Record<AccessResult | "failed", number>> }) => void
+  ): void {
+    this.summaryReporter = reporter;
+  }
+
+  setActionReporter(reporter: (action: AccessAuditAction) => void): void {
+    this.actionReporter = reporter;
+  }
+
   async sync(guild: Guild): Promise<void> {
     if (this.syncing) return;
     this.syncing = true;
@@ -185,7 +210,7 @@ export class AccessManager {
         try { result = await this.check(member, people, false); } catch { result = "failed"; }
         counts[result] = (counts[result] ?? 0) + 1;
       }
-      console.log("Access sync summary", { dryRun: this.settings.dryRun, ...counts });
+      this.summaryReporter({ dryRun: this.settings.dryRun, counts });
     } finally { this.syncing = false; }
   }
 
@@ -196,107 +221,184 @@ export class AccessManager {
     const task = (async () => {
       if (!people) await this.validateGuild(member.guild);
       const current = forceRefresh ? await member.guild.members.fetch({ user: member.id, force: true }) : member;
-      const manualOverride = await this.manualOverrides?.getAccessOverride(current.id);
-      if (manualOverride) return this.applyManualAccessOverride(current, manualOverride);
-      const records = people ?? await this.getParticipants();
-      return reconcileMember(current, records.get(member.id), this.settings);
+      let manualOverride = await this.manualOverrides?.getAccessOverride(current.id);
+      if (manualOverride && !current.roles.cache.has(this.settings.manualAccessRoleId)) {
+        await this.clearManualAccess(current, true, false);
+        manualOverride = undefined;
+      }
+      const previousNickname = current.nickname;
+      const hadWebsiteRole = current.roles.cache.has(this.settings.accessRoleId);
+      const hadManualRole = current.roles.cache.has(this.settings.manualAccessRoleId);
+      let records: Map<string, RegisteredPerson>;
+      try {
+        records = people ?? await this.getParticipants();
+      } catch (error) {
+        if (manualOverride) return this.applyManualAccessOverride(current, manualOverride);
+        throw error;
+      }
+      if (manualOverride) {
+        const person = records.get(current.id);
+        if (!person) {
+          const result = await this.applyManualAccessOverride(current, manualOverride);
+          this.reportAccessActions(current, previousNickname, manualOverride.nickname, hadWebsiteRole, hadManualRole, result);
+          return result;
+        }
+        if (this.settings.dryRun) return "dry-run-linked";
+        const result = await reconcileMember(current, person, this.settings);
+        if (result === "verified") {
+          if (current.roles.cache.has(this.settings.manualAccessRoleId)) {
+            await current.roles.remove(this.settings.manualAccessRoleId, "Website identity verified; removing temporary manual access role");
+          }
+          await this.manualOverrides?.removeAccessOverride(current.id);
+        }
+        this.reportAccessActions(current, previousNickname, createNickname(person) ?? undefined,
+          hadWebsiteRole, hadManualRole, result);
+        return result;
+      }
+      const person = records.get(current.id);
+      const result = await reconcileMember(current, person, this.settings);
+      this.reportAccessActions(current, previousNickname, person ? createNickname(person) ?? undefined : undefined,
+        hadWebsiteRole, hadManualRole, result);
+      return result;
     })();
     this.pending.set(member.id, task);
     try { return await task; } finally { this.pending.delete(member.id); }
   }
 
-  async grantManualAccess(member: GuildMember, nickname: string, actorId: string): Promise<void> {
+  async grantManualAccess(member: GuildMember, nickname: string, actorId: string, confirmLive = false): Promise<void> {
     if (!this.manualOverrides) throw new AccessConfigurationError("Manual access overrides are not configured.");
     if (member.guild.id !== this.settings.guildId || member.user.bot) throw new Error("Target is outside the configured member scope.");
-    if (this.settings.dryRun) throw new AccessConfigurationError("ACCESS_DRY_RUN=true; manual access, nickname, and role were not changed.");
+    if (this.settings.dryRun && !confirmLive) throw new AccessConfigurationError("ACCESS_DRY_RUN=true; add bekreft:true to approve this manual access change.");
     await this.validateGuild(member.guild);
+    const previousNickname = member.nickname;
+    const hadManualRole = member.roles.cache.has(this.settings.manualAccessRoleId);
     const override = await this.manualOverrides.grantAccess(member.id, nickname, actorId);
     try {
-      await this.applyManualAccessOverride(member, override);
+      await this.applyManualAccessOverride(member, override, true);
+      this.reportAccessActions(member, previousNickname, override.nickname,
+        member.roles.cache.has(this.settings.accessRoleId), hadManualRole, "manual-override");
     } catch (error) {
       await this.manualOverrides.removeAccessOverride(member.id);
       throw error;
     }
   }
 
-  async clearManualAccess(member: GuildMember): Promise<boolean> {
+  async clearManualAccess(member: GuildMember, confirmLive = false, resumeAutomatic = true): Promise<boolean> {
     if (!this.manualOverrides) throw new AccessConfigurationError("Manual access overrides are not configured.");
     if (member.guild.id !== this.settings.guildId || member.user.bot) throw new Error("Target is outside the configured member scope.");
-    if (this.settings.dryRun) throw new AccessConfigurationError("ACCESS_DRY_RUN=true; manual access override was not removed.");
+    if (this.settings.dryRun && !confirmLive) throw new AccessConfigurationError("ACCESS_DRY_RUN=true; add bekreft:true to approve clearing this manual access.");
+    const override = await this.manualOverrides.getAccessOverride(member.id);
+    if (!override) return false;
+    if (member.roles.cache.has(this.settings.manualAccessRoleId)) {
+      await member.roles.remove(this.settings.manualAccessRoleId, "Manual access override cleared");
+    }
     const removed = await this.manualOverrides.removeAccessOverride(member.id);
     if (removed) {
-      await this.check(member).catch(() => console.error("Manual access override cleared; automatic sync will retry when the registration API is available."));
+      this.actionReporter({ username: member.user.username || member.id, action: "manual-role-revoked" });
+      if (resumeAutomatic) {
+        await this.check(member).catch(() => console.error("Manual access override cleared; automatic sync will retry when the registration API is available."));
+      }
     }
     return removed;
   }
 
-  private async applyManualAccessOverride(member: GuildMember, override: ManualAccessOverride): Promise<AccessResult> {
-    const role = member.guild.roles.cache.get(this.settings.accessRoleId);
+  private async applyManualAccessOverride(member: GuildMember, override: ManualAccessOverride, forceLive = false): Promise<AccessResult> {
+    const role = member.guild.roles.cache.get(this.settings.manualAccessRoleId);
     const me = member.guild.members.me;
     if (!role || role.managed || role.id === member.guild.id
       || !me?.permissions.has(PermissionFlagsBits.ManageRoles) || me.roles.highest.comparePositionTo(role) <= 0) {
-      throw new AccessConfigurationError("Access role must be manageable by the bot.");
+      throw new AccessConfigurationError("Manual access role must be manageable by the bot.");
     }
     if (member.nickname !== override.nickname
       && (!member.manageable || !me.permissions.has(PermissionFlagsBits.ManageNicknames))) {
       throw new AccessConfigurationError("Bot cannot set the requested nickname for this member.");
     }
-    if (this.settings.dryRun) return "dry-run";
+    if (this.settings.dryRun && !forceLive) return "dry-run";
     if (member.nickname !== override.nickname) {
       await member.setNickname(override.nickname, `Manual access override by ${override.grantedBy}`);
     }
-    if (!member.roles.cache.has(this.settings.accessRoleId)) {
-      await member.roles.add(this.settings.accessRoleId, `Manual access override by ${override.grantedBy}`);
+    if (!member.roles.cache.has(this.settings.manualAccessRoleId)) {
+      await member.roles.add(this.settings.manualAccessRoleId, `Manual access override by ${override.grantedBy}`);
     }
     return "manual-override";
+  }
+
+  private reportAccessActions(
+    member: GuildMember,
+    previousNickname: string | null,
+    desiredNickname: string | undefined,
+    hadWebsiteRole: boolean,
+    hadManualRole: boolean,
+    result: AccessResult
+  ): void {
+    const username = (member.user.username || member.id).replace(/[\r\n`]/g, " ").trim().slice(0, 80);
+    const nickname = desiredNickname?.replace(/[\r\n`]/g, " ").trim().slice(0, 32);
+    if (nickname && previousNickname !== nickname && ["verified", "manual-override"].includes(result)) {
+      this.actionReporter({ username, action: "nickname-set", nickname });
+    }
+    if (result === "verified" && !hadWebsiteRole) {
+      this.actionReporter({ username, action: hadManualRole ? "manual-role-promoted" : "website-role-granted" });
+    } else if (result === "manual-override" && !hadManualRole) {
+      this.actionReporter({ username, action: "manual-role-granted" });
+    } else if (result === "revoked" && hadWebsiteRole) {
+      this.actionReporter({ username, action: "website-role-revoked" });
+    }
   }
 
   async handleNicknameUpdate(oldMember: Pick<GuildMember, "guild" | "nickname">, newMember: GuildMember): Promise<void> {
     if (this.settings.dryRun || oldMember.guild.id !== this.settings.guildId || newMember.user.bot
       || oldMember.nickname === newMember.nickname) return;
-    const linked = newMember.roles.cache.has(this.settings.accessRoleId);
+    const linked = newMember.roles.cache.has(this.settings.accessRoleId)
+      || newMember.roles.cache.has(this.settings.manualAccessRoleId);
     let exempt = false;
     try { exempt = isCrewMember(newMember, this.settings.crewRoleId); } catch { /* Access sync reports missing role configuration. */ }
     if (!linked && !exempt) return;
     await this.check(newMember);
   }
 
+  async handleManualAccessRoleRemoval(
+    oldMember: Pick<GuildMember, "roles">,
+    newMember: GuildMember,
+    resumeAutomatic: boolean
+  ): Promise<void> {
+    if (newMember.guild.id !== this.settings.guildId || newMember.user.bot
+      || !oldMember.roles.cache.has(this.settings.manualAccessRoleId)
+      || newMember.roles.cache.has(this.settings.manualAccessRoleId)) return;
+    await this.clearManualAccess(newMember, true, resumeAutomatic);
+  }
+
   canUseVoice(member: GuildMember): boolean {
-    if (this.settings.dryRun) return true;
     if (member.guild.id !== this.settings.guildId) return false;
-    if (member.roles.cache.has(this.settings.accessRoleId)) return true;
+    if (member.roles.cache.has(this.settings.accessRoleId)
+      || member.roles.cache.has(this.settings.manualAccessRoleId)) return true;
     try { return isCrewMember(member, this.settings.crewRoleId); } catch { return false; }
   }
 
   isVoiceCategoryProtected(category: CategoryChannel | null): boolean {
+    const requiredPermissions = [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect];
+    const everyoneOverwrite = category?.permissionOverwrites.cache.get(this.settings.guildId);
+    const accessOverwrite = category?.permissionOverwrites.cache.get(this.settings.accessRoleId);
+    const manualAccessOverwrite = category?.permissionOverwrites.cache.get(this.settings.manualAccessRoleId);
     return category?.guild.id === this.settings.guildId
-      && category.permissionOverwrites.cache.get(this.settings.guildId)?.deny.has(PermissionFlagsBits.ViewChannel) === true
-      && category.permissionOverwrites.cache.get(this.settings.accessRoleId)?.allow.has(PermissionFlagsBits.ViewChannel) === true;
+      && requiredPermissions.every(permission => everyoneOverwrite?.deny.has(permission))
+      && requiredPermissions.every(permission => accessOverwrite?.allow.has(permission))
+      && requiredPermissions.every(permission => manualAccessOverwrite?.allow.has(permission));
   }
 
   async handleButton(interaction: ButtonInteraction): Promise<void> {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const messages = getBotMessages().access.button;
     if (interaction.guildId !== this.settings.guildId || !interaction.guild) {
-      await interaction.editReply("Denne knappen gjelder ikke denne serveren.");
+      await interaction.editReply(messages.wrongServer);
       return;
     }
     try {
       await this.validateGuild(interaction.guild);
       const member = await interaction.guild.members.fetch(interaction.user.id);
       const result = await this.check(member);
-      const messages: Record<AccessResult, string> = {
-        exempt: "Du har tilgang gjennom Crew eller en høyere rolle. Oppdater kallenavnet selv hvis boten ikke kan endre det.",
-        "not-linked": "Vi fant ikke Discord-koblingen din. Logg inn på nettsiden og prøv igjen. Du trenger ikke være påmeldt årets LAN. Kontakt Crew hvis du allerede har koblet kontoen.",
-        revoked: "Vi finner ikke lenger Discord-koblingen din. Tilgangsrollen er fjernet. Koble Discord til på nettsiden for å få tilgang igjen.",
-        "manual-name": "Navnet kan ikke brukes automatisk som kallenavn. Kontakt Crew for hjelp.",
-        "cannot-rename": "Boten kan ikke endre kallenavnet ditt. Kontakt Crew for hjelp.",
-        "dry-run": "Kontrollen er fullført i testmodus. Ingen navn eller roller er endret.",
-        verified: "Kallenavnet er oppdatert, og du har tilgang til serveren.",
-        "manual-override": "Crew har gitt deg tilgang manuelt med kallenavnet som ble valgt."
-      };
       await interaction.editReply(messages[result]);
     } catch {
-      await interaction.editReply("Kunne ikke fullfore kontrollen akkurat na. Prov igjen senere eller kontakt Crew.");
+      await interaction.editReply(messages.checkFailed);
     }
   }
 
@@ -308,15 +410,15 @@ export class AccessManager {
       throw new Error("Bot cannot publish the entry message in access channel.");
     }
     if (this.settings.dryRun) return;
-    const content = "Velkommen til NT-LAN! Logg inn med Discord på nettsiden for å få tilgang. Kallenavnet vises som fornavn og initial for siste etternavn, for eksempel Ola N. Du trenger ikke være påmeldt årets LAN.";
+    const accessMessages = getBotMessages().access;
     const components = [new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel("Åpne nettsiden").setURL(this.settings.websiteUrl),
-      new ButtonBuilder().setStyle(ButtonStyle.Primary).setLabel("Sjekk tilgang").setCustomId(ACCESS_BUTTON_ID)
+      new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel(accessMessages.openWebsiteLabel).setURL(this.settings.websiteUrl),
+      new ButtonBuilder().setStyle(ButtonStyle.Primary).setLabel(accessMessages.checkAccessLabel).setCustomId(ACCESS_BUTTON_ID)
     )];
     const messages = await channel.messages.fetch({ limit: 100 });
     const existing = messages.find((message) => message.author.id === me.id
       && message.components.some((row) => "components" in row && row.components.some((component) => "customId" in component && component.customId === ACCESS_BUTTON_ID)));
-    if (existing) await existing.edit({ content, components });
-    else await channel.send({ content, components });
+    if (existing) await existing.edit({ content: accessMessages.entry, components });
+    else await channel.send({ content: accessMessages.entry, components });
   }
 }

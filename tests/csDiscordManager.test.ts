@@ -6,8 +6,8 @@ import type { VoiceState } from "discord.js";
 import { PermissionFlagsBits } from "discord.js";
 import { test } from "node:test";
 import { CsDiscordManager, type CsDiscordAdapter, type CsVoiceRoomRequest } from "../src/csDiscordManager.js";
-import { createCsVoiceRoomOverwrites } from "../src/discordCsVoiceAdapter.js";
-import type { MatBracketSummary } from "../src/matClient.js";
+import { createCsVoiceRoomOverwrites, ManualCsRoomDriftError } from "../src/discordCsVoiceAdapter.js";
+import type { MatBracketSummary, MatMatchSnapshot } from "../src/matClient.js";
 import type { MatWebhookEvent } from "../src/csWebhookServer.js";
 import type { RegisteredPerson } from "../src/registrationClient.js";
 
@@ -56,12 +56,14 @@ class FakeDiscordAdapter implements CsDiscordAdapter {
   readonly accessRevocations: Array<{ channelId: string; memberId: string }> = [];
   readonly deleteRequests: Array<{ channelId: string; delayMs: number; onDeleted: () => void }> = [];
   readonly memberChannels = new Map<string, string>();
+  driftTeamId: string | undefined;
   private readonly channelIds = new Map<string, string>();
   private wingmanChannelSequence = 0;
 
   async ensureRoom(request: CsVoiceRoomRequest, existingChannelId?: string): Promise<string> {
     this.ensured.push(request);
     const existing = existingChannelId ?? this.channelIds.get(request.key);
+    if (existing && this.driftTeamId === request.teamId) throw new ManualCsRoomDriftError("Synthetic manual room edit.");
     if (existing) return existing;
     const channelId = request.scope === "main"
       ? request.teamId === "team-one" ? "222222222222222222" : "333333333333333333"
@@ -216,25 +218,52 @@ test("new Wingman pairing moves members out of their previous bot rooms", async 
   }
 });
 
-test("private team-room overwrites deny broad roles and allow only mapped members, Crew, and bot", () => {
+test("Wingman GET recovery restores an active pairing and retires rooms when no match is active", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "cs-discord-manager-"));
+  const adapter = new FakeDiscordAdapter();
+  const manager = new CsDiscordManager(adapter, "111111111111111111", 5_000, join(directory, "rooms.json"), false);
+  const snapshot: MatMatchSnapshot = {
+    id: "match-42",
+    slug: "active-wingman",
+    status: "live",
+    tournamentId: "4",
+    round: 2,
+    team1: { id: "team-one", name: "Pair One", tag: "ONE", steamIds: [steamOne, steamTwo] },
+    team2: { id: "team-two", name: "Pair Two", tag: "TWO", steamIds: [steamThree, steamFour] }
+  };
+  try {
+    await manager.load();
+    const recovered = await manager.reconcileWingmanSnapshot("4", snapshot, participants, false);
+    assert.equal(recovered.plannedRooms, 2);
+    assert.deepEqual((await manager.getRooms()).map(room => room.matchSlug), ["active-wingman", "active-wingman"]);
+    await manager.reconcileWingmanSnapshot("4", null, participants, false);
+    assert.equal(adapter.deleteRequests.length, 2);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("CS team rooms allow both CS participant roles, Crew, bot, and mapped members", () => {
   const overwrites = createCsVoiceRoomOverwrites({
     everyoneRoleId: "111111111111111111",
     participantRoleId: "222222222222222222",
+    manualParticipantRoleId: "222222222222222223",
     crewRoleId: "333333333333333333",
     botUserId: "444444444444444444",
     memberIds: [discordOne, discordOne, discordTwo]
   });
-  assert.equal(overwrites.length, 6);
+  assert.equal(overwrites.length, 7);
   assert.deepEqual(overwrites[0]?.deny, [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect]);
-  assert.deepEqual(overwrites[1]?.deny, [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect]);
+  assert.deepEqual(overwrites[1]?.allow, [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect]);
   assert.deepEqual(overwrites[2]?.allow, [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect]);
-  assert.deepEqual(overwrites[3]?.allow, [
+  assert.deepEqual(overwrites[3]?.allow, [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect]);
+  assert.deepEqual(overwrites[4]?.allow, [
     PermissionFlagsBits.ViewChannel,
     PermissionFlagsBits.Connect,
     PermissionFlagsBits.ManageChannels,
     PermissionFlagsBits.MoveMembers
   ]);
-  assert.deepEqual(overwrites.slice(4).map(overwrite => overwrite.id), [discordOne, discordTwo]);
+  assert.deepEqual(overwrites.slice(5).map(overwrite => overwrite.id), [discordOne, discordTwo]);
 });
 
 test("main bracket snapshot prepares every known team room before a match is ready", async () => {
@@ -302,6 +331,34 @@ test("explicit tournament opt-out removes CS role and managed room access only",
     assert.equal(roleSummary.granted, 1);
     assert.equal(roleSummary.preservedMissingData, 1);
     assert.deepEqual(adapter.accessRevocations, [{ channelId: "222222222222222222", memberId: discordOne }]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("manually changed MAT rooms are locked and skipped by later reconciliation", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "cs-discord-manager-drift-"));
+  const path = join(directory, "rooms.json");
+  const adapter = new FakeDiscordAdapter();
+  try {
+    const manager = new CsDiscordManager(adapter, "111111111111111111", 5_000, path, false);
+    await manager.load();
+    adapter.memberChannels.set(discordOne, "111111111111111111");
+    adapter.memberChannels.set(discordTwo, "111111111111111111");
+    await manager.handleMatchEvent(matchEvent("match.ready"), "main", participants, false);
+    adapter.moved.length = 0;
+    adapter.driftTeamId = "team-one";
+    const drifted = await manager.handleMatchEvent(matchEvent("match.ready"), "main", participants, false);
+    assert.equal(drifted.updatedRooms, 0);
+    assert.equal(adapter.moved.some(move => move.memberId === discordOne), false);
+    assert.equal((await manager.getRooms()).find(room => room.teamId === "team-one")?.manualOverride, true);
+
+    const restarted = new CsDiscordManager(adapter, "111111111111111111", 5_000, path, false);
+    await restarted.load();
+    const ensureCallsBefore = adapter.ensured.filter(room => room.teamId === "team-one").length;
+    await restarted.handleMatchEvent(matchEvent("match.ready"), "main", participants, false);
+    assert.equal(adapter.ensured.filter(room => room.teamId === "team-one").length, ensureCallsBefore);
+    assert.equal((await restarted.getRooms()).find(room => room.teamId === "team-one")?.manualOverride, true);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

@@ -2,7 +2,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { VoiceState } from "discord.js";
 import { planCsTeamRooms } from "./csTournamentSync.js";
-import type { MatBracketSummary, MatTeam } from "./matClient.js";
+import type { MatBracketSummary, MatMatchSnapshot, MatTeam } from "./matClient.js";
 import type { MatWebhookEvent } from "./csWebhookServer.js";
 import type { RegisteredPerson } from "./registrationClient.js";
 
@@ -19,7 +19,7 @@ export interface CsVoiceRoomRequest {
 }
 
 export interface CsDiscordAdapter {
-  ensureRoom(request: CsVoiceRoomRequest, existingChannelId?: string): Promise<string>;
+  ensureRoom(request: CsVoiceRoomRequest, existingChannelId?: string, previousRequest?: CsVoiceRoomRequest): Promise<string>;
   moveMemberFromSources(memberId: string, channelId: string, allowedSourceChannelIds: string[]): Promise<boolean>;
   setParticipantRole(memberId: string, shouldHaveRole: boolean): Promise<boolean>;
   revokeMemberFromRoom(channelId: string, memberId: string): Promise<void>;
@@ -29,6 +29,7 @@ export interface CsDiscordAdapter {
 interface OwnedCsRoom extends CsVoiceRoomRequest {
   channelId: string;
   retiring?: boolean;
+  manualOverride?: boolean;
 }
 
 interface PersistedCsRoomState {
@@ -64,6 +65,7 @@ function isOwnedRoom(value: unknown): value is OwnedCsRoom {
     && (value.scope === "main" || value.scope === "wingman") && typeof value.teamId === "string"
     && typeof value.tournamentId === "string" && typeof value.matchSlug === "string"
     && (value.retiring === undefined || typeof value.retiring === "boolean")
+    && (value.manualOverride === undefined || typeof value.manualOverride === "boolean")
     && Array.isArray(value.memberIds) && value.memberIds.every(id => typeof id === "string" && discordIdPattern.test(id));
 }
 
@@ -142,7 +144,7 @@ export class CsDiscordManager {
           };
         }
         const previousRooms = [...this.rooms.values()].filter(room => room.scope === scope
-          && room.tournamentId === event.match.tournamentId);
+          && room.tournamentId === event.match.tournamentId && !room.manualOverride);
         const updates: Array<{ channelId: string; memberIds: string[] }> = [];
       for (const planned of plan.rooms) {
         const sourceTeam = teams.find(team => team.id === planned.teamId);
@@ -151,6 +153,7 @@ export class CsDiscordManager {
           ? `main:${event.match.tournamentId}:${planned.teamId}`
           : `wingman:${event.match.tournamentId}:${event.match.slug}:${planned.teamId}`;
         const previous = this.rooms.get(key);
+        if (previous?.manualOverride) continue;
         const request: CsVoiceRoomRequest = {
           key,
           name: `${scope === "main" ? "CS" : "Wingman"} ${planned.channelName}`.slice(0, 100),
@@ -160,7 +163,9 @@ export class CsDiscordManager {
           matchSlug: event.match.slug,
           memberIds: planned.memberIds
         };
-        const channelId = await this.adapter.ensureRoom(request, previous?.channelId);
+        const ensured = await this.ensureRoom(request, previous);
+        if (ensured.manualOverride) continue;
+        const channelId = ensured.channelId!;
         this.rooms.set(key, { ...request, channelId });
         await this.persist();
         updates.push({ channelId, memberIds: request.memberIds });
@@ -207,11 +212,12 @@ export class CsDiscordManager {
 
     if (!dryRun && !this.globallyDryRun) {
       const previousRooms = [...this.rooms.values()].filter(room => room.scope === "main"
-        && room.tournamentId === tournamentId);
+        && room.tournamentId === tournamentId && !room.manualOverride);
       const updates: Array<{ channelId: string; memberIds: string[] }> = [];
       for (const planned of plan.rooms) {
         const key = `main:${tournamentId}:${planned.teamId}`;
         const previous = this.rooms.get(key);
+        if (previous?.manualOverride) continue;
         const request: CsVoiceRoomRequest = {
           key,
           name: `CS ${planned.channelName}`.slice(0, 100),
@@ -221,7 +227,9 @@ export class CsDiscordManager {
           matchSlug: "main-roster",
           memberIds: planned.memberIds
         };
-        const channelId = await this.adapter.ensureRoom(request, previous?.channelId);
+        const ensured = await this.ensureRoom(request, previous);
+        if (ensured.manualOverride) continue;
+        const channelId = ensured.channelId!;
         this.rooms.set(key, { ...request, channelId });
         await this.persist();
         updates.push({ channelId, memberIds: request.memberIds });
@@ -246,13 +254,45 @@ export class CsDiscordManager {
     };
   }
 
+  async reconcileWingmanSnapshot(
+    tournamentId: string,
+    activeMatch: MatMatchSnapshot | null,
+    participants: Map<string, RegisteredPerson>,
+    dryRun: boolean
+  ): Promise<CsDiscordSyncSummary> {
+    this.assertLoaded();
+    if (activeMatch) {
+      if (activeMatch.tournamentId !== tournamentId) {
+        return { plannedRooms: 0, updatedRooms: 0, skippedTeams: 1, unmatchedPlayers: 0, ambiguousSteamIds: 0 };
+      }
+      const event: MatWebhookEvent = {
+        id: `recovery:${tournamentId}:${activeMatch.id}:${activeMatch.status}`,
+        type: "match.ready",
+        test: false,
+        sequence: activeMatch.round ?? 0,
+        match: {
+          id: activeMatch.id,
+          slug: activeMatch.slug,
+          status: activeMatch.status,
+          tournamentId,
+          team1: activeMatch.team1,
+          team2: activeMatch.team2
+        }
+      };
+      return this.handleMatchEvent(event, "wingman", participants, dryRun);
+    }
+
+    if (!dryRun && !this.globallyDryRun) await this.retireWingmanTournament(tournamentId);
+    return { plannedRooms: 0, updatedRooms: 0, skippedTeams: 0, unmatchedPlayers: 0, ambiguousSteamIds: 0 };
+  }
+
   async handleVoiceStateUpdate(state: VoiceState): Promise<boolean> {
     this.assertLoaded();
     if (this.globallyDryRun) return false;
     if (state.channelId !== this.lobbyChannelId || !state.id || state.member?.user.bot) return false;
     const targets = new Set<string>();
     for (const room of this.rooms.values()) {
-      if (!room.retiring && room.memberIds.includes(state.id)) targets.add(room.channelId);
+      if (!room.retiring && !room.manualOverride && room.memberIds.includes(state.id)) targets.add(room.channelId);
     }
     if (targets.size !== 1) return false;
     const channelId = targets.values().next().value as string | undefined;
@@ -304,9 +344,27 @@ export class CsDiscordManager {
     return summary;
   }
 
+  private async ensureRoom(
+    request: CsVoiceRoomRequest,
+    previous?: OwnedCsRoom
+  ): Promise<{ channelId?: string; manualOverride: boolean }> {
+    try {
+      return {
+        channelId: await this.adapter.ensureRoom(request, previous?.channelId, previous),
+        manualOverride: false
+      };
+    } catch (error) {
+      if (!previous || !(error instanceof Error) || error.name !== "ManualCsRoomDriftError") throw error;
+      this.rooms.set(request.key, { ...previous, manualOverride: true });
+      await this.persist();
+      console.warn("A manually changed MAT-owned voice room is locked against automatic updates.");
+      return { manualOverride: true };
+    }
+  }
+
   private async removeMemberFromRooms(memberId: string): Promise<void> {
     for (const [key, room] of this.rooms) {
-      if (!room.memberIds.includes(memberId)) continue;
+      if (room.manualOverride || !room.memberIds.includes(memberId)) continue;
       await this.adapter.revokeMemberFromRoom(room.channelId, memberId);
       this.rooms.set(key, { ...room, memberIds: room.memberIds.filter(id => id !== memberId) });
       await this.persist();
@@ -315,8 +373,19 @@ export class CsDiscordManager {
 
   private async retireWingmanMatch(tournamentId: string, matchSlug: string): Promise<void> {
     for (const [key, room] of this.rooms) {
-      if (room.scope !== "wingman" || room.tournamentId !== tournamentId || room.matchSlug !== matchSlug) continue;
+      if (room.manualOverride || room.scope !== "wingman" || room.tournamentId !== tournamentId || room.matchSlug !== matchSlug) continue;
       if (room.retiring) continue;
+      this.rooms.set(key, { ...room, retiring: true });
+      await this.persist();
+      this.adapter.deleteRoomWhenEmpty(room.channelId, this.deleteDelayMs, () => {
+        void this.removeRetiredRoom(key);
+      });
+    }
+  }
+
+  private async retireWingmanTournament(tournamentId: string): Promise<void> {
+    for (const [key, room] of this.rooms) {
+      if (room.manualOverride || room.scope !== "wingman" || room.tournamentId !== tournamentId || room.retiring) continue;
       this.rooms.set(key, { ...room, retiring: true });
       await this.persist();
       this.adapter.deleteRoomWhenEmpty(room.channelId, this.deleteDelayMs, () => {
@@ -327,7 +396,7 @@ export class CsDiscordManager {
 
   private async retireOtherWingmanMatches(tournamentId: string, currentMatchSlug: string): Promise<void> {
     for (const [key, room] of this.rooms) {
-      if (room.scope !== "wingman" || room.tournamentId !== tournamentId
+      if (room.manualOverride || room.scope !== "wingman" || room.tournamentId !== tournamentId
         || room.matchSlug === currentMatchSlug || room.retiring) continue;
       this.rooms.set(key, { ...room, retiring: true });
       await this.persist();
