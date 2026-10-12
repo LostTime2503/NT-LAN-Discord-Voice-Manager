@@ -37,6 +37,7 @@ export const botSettingsCommand = {
       await interaction.editReply(getBotText("botSettings.notConfigured"));
       return;
     }
+    let selectedFeature: string | null = null;
     try {
       const actor = await interaction.guild.members.fetch(interaction.user.id);
       if (!isCrewMember(actor, config.crewRoleId)) {
@@ -48,7 +49,7 @@ export const botSettingsCommand = {
         await interaction.editReply(getBotText("botSettings.notLoaded"));
         return;
       }
-      const selectedFeature = interaction.options.getString("funksjon");
+      selectedFeature = interaction.options.getString("funksjon");
       const enabled = interaction.options.getBoolean("aktiv");
       if (selectedFeature === null && enabled === null) {
         const settings = controller.getSettings();
@@ -85,7 +86,12 @@ export const botSettingsCommand = {
         followUp
       }));
     } catch (error) {
-      await interaction.editReply(getBotText("botSettings.failed"));
+      const missingCsVoicePrefix = getBotText("botSettings.csVoiceMissingConfig", { missing: "" });
+      const message = selectedFeature === "csVoice" && error instanceof Error
+        && error.message.startsWith(missingCsVoicePrefix)
+        ? error.message
+        : getBotText("botSettings.failed");
+      await interaction.editReply(message);
     }
   }
 };
