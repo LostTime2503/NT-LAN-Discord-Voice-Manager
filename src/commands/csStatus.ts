@@ -1,7 +1,6 @@
 import { MessageFlags, SlashCommandBuilder, type ChatInputCommandInteraction } from "discord.js";
 import { isCrewMember } from "../accessManager.js";
 import { config } from "../config.js";
-import { DiscordJsCsVoiceAdapter } from "../discordCsVoiceAdapter.js";
 import { MatClient } from "../matClient.js";
 import { manualOverrideStore } from "../manualOverrides.js";
 import { RegistrationClient } from "../registrationClient.js";
@@ -81,25 +80,6 @@ export const csStatusCommand = {
         lines.push({ label: getBotText("csStatus.label.receiver"), result: getBotText(response.status === 204 ? "csStatus.result.ok" : "csStatus.result.error") as StatusLine["result"], detail: response.status === 204 ? getBotText("csStatus.detail.receiverListening", { port: config.csWebhookPort }) : getBotText("csStatus.detail.receiverStatus", { status: response.status }) });
       } catch {
         lines.push({ label: getBotText("csStatus.label.receiver"), result: getBotText("csStatus.result.error") as StatusLine["result"], detail: getBotText("csStatus.detail.receiverFailed") });
-      }
-    }
-
-    if (discordConfigured) {
-      try {
-        const adapter = new DiscordJsCsVoiceAdapter(
-          interaction.client,
-          config.guildId,
-          config.csCategoryId!,
-          config.csLobbyChannelId!,
-          config.csParticipantRoleId!,
-          config.manualCsParticipantRoleId!,
-          config.crewRoleId!
-        );
-        await adapter.validate();
-        lines.push({ label: getBotText("csStatus.label.discord"), result: getBotText("csStatus.result.ok") as StatusLine["result"], detail: getBotText("csStatus.detail.permissionsValid") });
-      } catch (error) {
-        console.error("CS Discord permission preflight failed.", error instanceof Error ? error.message : "unknown error");
-        lines.push({ label: getBotText("csStatus.label.discord"), result: getBotText("csStatus.result.error") as StatusLine["result"], detail: getBotText("csStatus.detail.permissionsFailed") });
       }
     }
 

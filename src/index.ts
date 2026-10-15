@@ -489,7 +489,6 @@ async function startCsVoiceSync(enabled = config.csVoiceSyncEnabled, live = !con
           config.manualCsParticipantRoleId,
           config.crewRoleId!
         );
-        if (live) await adapter.validate();
         csDiscordManager = new CsDiscordManager(
           adapter,
           config.csLobbyChannelId!,
