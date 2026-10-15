@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CsParticipantRoleRuntime } from "../src/csParticipantRoleRuntime.js";
+import { CsParticipantRoleRuntime, summarizeCsParticipantList } from "../src/csParticipantRoleRuntime.js";
 import type { RegisteredPerson } from "../src/registrationClient.js";
 
 const enrolledId = "123456789012345678";
@@ -16,6 +16,19 @@ const participants = new Map<string, RegisteredPerson>([
   [manualId, { name: "Manual", firstName: "Manual", steamId: "76561198000000004", manualCsLink: true }],
   [manualEnrolledId, { name: "Crew Main", firstName: "Crew", tournaments: ["cs2"], steamId: "76561198000000005", manualCsLink: true }]
 ]);
+
+test("CS participant summary separates Steam links, enrollment, and missing data", () => {
+  assert.deepEqual(summarizeCsParticipantList(participants.values()), {
+    participants: 5,
+    steamMapped: 2,
+    mainEnrolled: 2,
+    wingmanEnrolled: 0,
+    enrolled: 2,
+    explicitlyNotEnrolled: 1,
+    missingEnrollmentData: 2,
+    manualLinks: 2
+  });
+});
 
 test("role dry-run reports enrollment but performs no role mutations", async () => {
   const calls: Array<{ memberId: string; shouldHaveRole: boolean }> = [];

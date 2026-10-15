@@ -228,7 +228,7 @@
     "csStatus.detail.matTokenConfigured": "konfigurert",
     "csStatus.detail.matTokenMissing": "MAT_API_TOKEN mangler",
     "csStatus.detail.participantsFailed": "deltakerlisten kunne ikke leses",
-    "csStatus.detail.steamCounts": "{mapped} av {participants} CS-deltakere har SteamID64",
+    "csStatus.detail.steamCounts": "{mapped}/{participants} har SteamID64; Main {main}, Wingman {wingman}, manuell {manual}, uten felt {missing}, ikke påmeldt {notEnrolled}. Inkluderer koblede barn; ikke kategoritilgang.",
     "csStatus.detail.permissionsValid": "kategori, lobby, roller, Manage Channels og Move Members validert",
     "csStatus.detail.permissionsFailed": "Discord-rettighetskontrollen feilet; se Dockhand-loggen.",
     "csUnlink.notConfigured": "CS-link er ikke konfigurert for denne serveren.",

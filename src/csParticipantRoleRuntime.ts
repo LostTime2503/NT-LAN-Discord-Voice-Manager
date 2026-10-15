@@ -1,5 +1,46 @@
 import type { CsDiscordAdapter } from "./csDiscordManager.js";
 import type { CsRegistrationSource } from "./csSyncRuntime.js";
+import type { RegisteredPerson } from "./registrationClient.js";
+
+export interface CsParticipantListSummary {
+  participants: number;
+  steamMapped: number;
+  mainEnrolled: number;
+  wingmanEnrolled: number;
+  enrolled: number;
+  explicitlyNotEnrolled: number;
+  missingEnrollmentData: number;
+  manualLinks: number;
+}
+
+export function summarizeCsParticipantList(participants: Iterable<RegisteredPerson>): CsParticipantListSummary {
+  const summary: CsParticipantListSummary = {
+    participants: 0,
+    steamMapped: 0,
+    mainEnrolled: 0,
+    wingmanEnrolled: 0,
+    enrolled: 0,
+    explicitlyNotEnrolled: 0,
+    missingEnrollmentData: 0,
+    manualLinks: 0
+  };
+  for (const participant of participants) {
+    summary.participants += 1;
+    if (participant.steamId) summary.steamMapped += 1;
+    if (participant.manualCsLink) summary.manualLinks += 1;
+    if (!Array.isArray(participant.tournaments)) {
+      summary.missingEnrollmentData += 1;
+      continue;
+    }
+    const main = participant.tournaments.includes("cs2");
+    const wingman = participant.tournaments.includes("cs2-wingman");
+    if (main) summary.mainEnrolled += 1;
+    if (wingman) summary.wingmanEnrolled += 1;
+    if (main || wingman) summary.enrolled += 1;
+    else summary.explicitlyNotEnrolled += 1;
+  }
+  return summary;
+}
 
 export interface CsRoleSyncSummary {
   participants: number;
@@ -42,25 +83,22 @@ export class CsParticipantRoleRuntime {
       const participants = this.source.getCsParticipants
         ? await this.source.getCsParticipants()
         : await this.source.getParticipants();
+      const participantSummary = summarizeCsParticipantList(participants.values());
       const summary: CsRoleSyncSummary = {
-        participants: participants.size,
-        enrolled: 0,
-        explicitlyNotEnrolled: 0,
-        missingEnrollmentData: 0,
-        manualLinks: 0,
+        participants: participantSummary.participants,
+        enrolled: participantSummary.enrolled,
+        explicitlyNotEnrolled: participantSummary.explicitlyNotEnrolled,
+        missingEnrollmentData: participantSummary.missingEnrollmentData,
+        manualLinks: participantSummary.manualLinks,
         rolesAdded: 0,
         rolesRemoved: 0,
         dryRun: this.dryRun
       };
       for (const [discordId, participant] of participants) {
-        if (participant.manualCsLink) summary.manualLinks += 1;
         if (!Array.isArray(participant.tournaments)) {
-          summary.missingEnrollmentData += 1;
           continue;
         }
         const enrolled = participant.tournaments.includes("cs2") || participant.tournaments.includes("cs2-wingman");
-        if (enrolled) summary.enrolled += 1;
-        else summary.explicitlyNotEnrolled += 1;
         if (this.dryRun) continue;
         try {
           const changed = await this.adapter.setParticipantRole(discordId, enrolled);

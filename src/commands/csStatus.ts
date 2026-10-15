@@ -5,6 +5,7 @@ import { MatClient } from "../matClient.js";
 import { manualOverrideStore } from "../manualOverrides.js";
 import { RegistrationClient } from "../registrationClient.js";
 import { getBotSettingsController } from "../botSettingsController.js";
+import { summarizeCsParticipantList } from "../csParticipantRoleRuntime.js";
 import { getBotText } from "../messages.js";
 import { discoverActiveCsTournaments } from "../csTournamentDiscovery.js";
 
@@ -128,8 +129,20 @@ export const csStatusCommand = {
         });
         const baseParticipants = await registration.getCsParticipants();
         const csParticipants = await manualOverrideStore.getCsParticipants(baseParticipants);
-        const steamMapped = [...csParticipants.values()].filter(person => person.steamId).length;
-        lines.push({ label: getBotText("csStatus.label.steamLinks"), result: getBotText(steamMapped > 0 ? "csStatus.result.ok" : "csStatus.result.missing") as StatusLine["result"], detail: getBotText("csStatus.detail.steamCounts", { mapped: steamMapped, participants: csParticipants.size }) });
+        const summary = summarizeCsParticipantList(csParticipants.values());
+        lines.push({
+          label: getBotText("csStatus.label.steamLinks"),
+          result: getBotText(summary.steamMapped > 0 ? "csStatus.result.ok" : "csStatus.result.missing") as StatusLine["result"],
+          detail: getBotText("csStatus.detail.steamCounts", {
+            mapped: summary.steamMapped,
+            participants: summary.participants,
+            main: summary.mainEnrolled,
+            wingman: summary.wingmanEnrolled,
+            manual: summary.manualLinks,
+            missing: summary.missingEnrollmentData,
+            notEnrolled: summary.explicitlyNotEnrolled
+          })
+        });
       } catch {
         lines.push({ label: getBotText("csStatus.label.registration"), result: getBotText("csStatus.result.error") as StatusLine["result"], detail: getBotText("csStatus.detail.participantsFailed") });
       }
