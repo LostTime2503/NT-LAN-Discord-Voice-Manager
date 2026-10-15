@@ -319,9 +319,9 @@ test("entry message uses Norwegian copy and updates the existing link URL", asyn
   const entry = captures[0];
   assert.match(entry.content, /Discord-kontoen din være koblet til NTLAN-kontoen din på ntlan\.no/);
   assert.match(entry.content, /«Sjekk tilgang» her/);
-  assert.match(entry.content, /initialer for resten av navnet/);
+  assert.match(entry.content, /forbokstaven i hvert av de resterende navnene/);
   assert.match(entry.content, /Velkommen til NTLAN/);
-  assert.match(entry.content, /under 18.*foreldrene dine har fått innloggingen din på e-post/i);
+  assert.match(entry.content, /under 18.*foreldrene dine har fått innloggingsinformasjonen din til ntlan\.no på e-post/i);
   assert.doesNotMatch(entry.content, /spør foresatt/i);
   assert.doesNotMatch(entry.content, /familie/i);
   const buttons = entry.components.flatMap((row) => row.toJSON().components);

@@ -1,6 +1,6 @@
 {
   "access": {
-    "entry": "👋 Velkommen til NTLAN!\n\nFor å få tilgang må Discord-kontoen din være koblet til NTLAN-kontoen din på ntlan.no.\n\nTrykk «Åpne nettsiden» for å logge inn og koble til. Når det er gjort, trykker du «Sjekk tilgang» her.\n\nDiscord-kallenavnet ditt settes til fornavn og initialer for resten av navnet.\n\nEr du under 18? Foreldrene dine har fått innloggingen din på e-post. \n\nVed problemer kontakt crew på Discord.",
+    "entry": "👋 Velkommen til NTLAN!\n\nFor å få tilgang må Discord-kontoen din være koblet til NTLAN-kontoen din på ntlan.no.\n\nTrykk «Åpne nettsiden» for å logge inn og koble til. Når det er gjort, trykker du «Sjekk tilgang» her.\n\nDiscord-kallenavnet ditt settes automatisk til fornavnet ditt og forbokstaven i hvert av de resterende navnene.\n\nEr du under 18? Foreldrene dine har fått innloggingsinformasjonen din til ntlan.no på e-post.\n\nHvis du får problemer, kontakt Crew på Discord.",
     "openWebsiteLabel": "Åpne nettsiden",
     "checkAccessLabel": "Sjekk tilgang",
     "button": {

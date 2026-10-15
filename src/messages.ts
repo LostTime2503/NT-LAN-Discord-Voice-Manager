@@ -348,8 +348,8 @@ const defaultMessages: BotMessages = {
       "👋 Velkommen til NTLAN!",
       "For å få tilgang må Discord-kontoen din være koblet til NTLAN-kontoen din på ntlan.no.",
       "Trykk «Åpne nettsiden» for å logge inn og koble til. Når det er gjort, trykker du «Sjekk tilgang» her.",
-      "Discord-kallenavnet ditt settes til fornavn og initialer for resten av navnet.",
-      "Er du under 18? Foreldrene dine har fått innloggingen din på e-post."
+      "Discord-kallenavnet ditt settes automatisk til fornavnet ditt og forbokstaven i hvert av de resterende navnene.",
+      "Er du under 18? Foreldrene dine har fått innloggingsinformasjonen din til ntlan.no på e-post."
     ].join("\n\n"),
     openWebsiteLabel: "Åpne nettsiden",
     checkAccessLabel: "Sjekk tilgang",
