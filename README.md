@@ -243,6 +243,8 @@ Inngangsmeldingen har nettsidelenke og **Sjekk tilgang**-knapp. Knappen gir et p
 
 `/cs-link person steamid64` kobler identitet og gir `MANUAL_CS_PARTICIPANT_ROLE_ID`; `/cs-unlink person` fjerner Steam-koblingen og beholder rollen som standard. Sett `behold_rolle:false` for også å fjerne bare `MANUAL_CS_PARTICIPANT_ROLE_ID`; den API-styrte `CS_PARTICIPANT_ROLE_ID` røres aldri. `/cs-giveaccess person handling` kan gi eller fjerne den manuelle CS-rollen uten Steam-kobling. Automatisk enrollment-synk administrerer bare `CS_PARTICIPANT_ROLE_ID`.
 
+`/cs-max-bitrate` viser først alle voice-kanalene direkte under `CS_CATEGORY_ID` som ikke allerede bruker serverens maksimale bitrate. Kommandoen inkluderer lobby og manuelt opprettede rom i preview-listen; den endrer bare bitrate og krever `bekreft:true` med preview-koden. Boten trenger `Manage Channels` i CS-kategorien.
+
 `/manual-overrides` viser privat for Crew hvem som fikk manuell tilgang eller Steam-kobling, hvem som utførte handlingen og tidspunktet. Steam-ID-er og lagrede kallenavn vises ikke. `/crew-help` gir Crew og høyere en privat oversikt over botkommandoene.
 
 `/cs-webhook-check` viser om den lokale MAT-mottakeren svarer, og når den sist mottok et signert testevent. Klikk først **Send test event** i MAT, vent litt og kjør kommandoen; den leser ikke payloaden og utfører ingen Discord-endringer.

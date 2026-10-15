@@ -64,7 +64,7 @@ test("command definitions load without initializing incomplete access configurat
     const definitions = commands.map(command => command.data.toJSON());
     if (!definitions.some(command => command.name === 'setup-access')) throw new Error('Missing setup-access');
     if (!definitions.some(command => command.name === 'voice-name')) throw new Error('Missing voice-name');
-    for (const name of ['giveaccess', 'clearaccessoverride', 'cs-link', 'cs-unlink', 'cs-status', 'cs-webhook-check', 'make-cs-team-rooms', 'cs-notifications', 'meal-notifications', 'manual-overrides', 'crew-help', 'set-up-crew-help']) {
+    for (const name of ['giveaccess', 'clearaccessoverride', 'cs-link', 'cs-unlink', 'cs-status', 'cs-webhook-check', 'cs-max-bitrate', 'make-cs-team-rooms', 'cs-notifications', 'meal-notifications', 'manual-overrides', 'crew-help', 'set-up-crew-help']) {
       if (!definitions.some(command => command.name === name)) throw new Error('Missing ' + name);
     }
     const fixedRooms = definitions.find(command => command.name === 'make-cs-team-rooms');

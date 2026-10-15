@@ -30,6 +30,13 @@ export function formatCsRoomName(name: string, scope: CsVoiceRoomScope, marker: 
   return `${scopeName} - ${cleanName} ${marker}`;
 }
 
+export function getCsVoiceRoomsNeedingBitrateUpdate<T extends Pick<VoiceBasedChannel, "id" | "bitrate">>(
+  rooms: readonly T[],
+  maximumBitrate: number
+): T[] {
+  return rooms.filter(room => room.bitrate !== maximumBitrate);
+}
+
 export class ManualCsRoomDriftError extends Error {
   constructor(message: string) {
     super(message);
@@ -166,6 +173,9 @@ export class DiscordJsCsVoiceAdapter implements CsDiscordAdapter {
 
     if (channel.name !== channelName) {
       await channel.setName(channelName, "Update MAT-owned CS team room name");
+    }
+    if (channel.bitrate !== guild.maximumBitrate) {
+      await channel.setBitrate(guild.maximumBitrate, "Update MAT-owned CS team room to guild maximum bitrate");
     }
     await channel.permissionOverwrites.set(permissionOverwrites, "Sync MAT-owned CS team room access");
     return channel.id;

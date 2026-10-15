@@ -20,6 +20,7 @@ import { manualOverridesCommand } from "./manualOverrides.js";
 import { crewHelpCommand } from "./crewHelp.js";
 import { setupCrewHelpCommand } from "./setupCrewHelp.js";
 import { csWebhookCheckCommand } from "./csWebhookCheck.js";
+import { csMaxBitrateCommand } from "./csMaxBitrate.js";
 
 export const commands = [
   pingCommand,
@@ -43,7 +44,8 @@ export const commands = [
   manualOverridesCommand,
   crewHelpCommand,
   setupCrewHelpCommand,
-  csWebhookCheckCommand
+  csWebhookCheckCommand,
+  csMaxBitrateCommand
 ];
 
 export function findCommand(commandName: string) {

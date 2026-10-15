@@ -6,7 +6,7 @@ import type { VoiceState } from "discord.js";
 import { ChannelType, PermissionFlagsBits, type Client } from "discord.js";
 import { test } from "node:test";
 import { CsDiscordManager, type CsDiscordAdapter, type CsVoiceRoomRequest } from "../src/csDiscordManager.js";
-import { createCsVoiceRoomOverwrites, DiscordJsCsVoiceAdapter, formatCsRoomName, ManualCsRoomDriftError } from "../src/discordCsVoiceAdapter.js";
+import { createCsVoiceRoomOverwrites, DiscordJsCsVoiceAdapter, formatCsRoomName, getCsVoiceRoomsNeedingBitrateUpdate, ManualCsRoomDriftError } from "../src/discordCsVoiceAdapter.js";
 import type { MatBracketSummary, MatMatchSnapshot } from "../src/matClient.js";
 import type { MatWebhookEvent } from "../src/csWebhookServer.js";
 import type { RegisteredPerson } from "../src/registrationClient.js";
@@ -518,4 +518,13 @@ test("cancel-all prevents the Discord adapter from deleting a room on an existin
 
   assert.equal(deleteCalls, 0);
   assert.equal(cleanupCalls, 0);
+});
+
+test("CS bitrate plan selects rooms that differ from the current server maximum", () => {
+  const rooms = [
+    { id: "room-low", bitrate: 96_000 },
+    { id: "room-current", bitrate: 384_000 },
+    { id: "room-other", bitrate: 256_000 }
+  ];
+  assert.deepEqual(getCsVoiceRoomsNeedingBitrateUpdate(rooms, 384_000).map(room => room.id), ["room-low", "room-other"]);
 });
