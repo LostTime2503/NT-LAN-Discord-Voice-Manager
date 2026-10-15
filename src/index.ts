@@ -17,16 +17,27 @@ import { CsParticipantRoleRuntime } from "./csParticipantRoleRuntime.js";
 import { loadBotMessages } from "./messages.js";
 import { BotSettingsStore, type BotFeature } from "./botSettings.js";
 import { BotSettingsController, configureBotSettingsController } from "./botSettingsController.js";
+import { setCsWebhookRuntime } from "./csWebhookDiagnostics.js";
 import { notifyCsParticipantsCommand } from "./commands/notifyCsParticipants.js";
-import { getBotText } from "./messages.js";
+import { csNotificationModalCommand, csNotificationScheduleStore } from "./commands/csNotificationModalCommand.js";
+import { CsNotificationScheduler } from "./csNotificationSchedules.js";
+import { getBotMessages, getBotText } from "./messages.js";
+import { MealParticipantRoleRuntime } from "./mealParticipantRoleRuntime.js";
+import { DiscordJsMealRoleAdapter } from "./discordMealRoleAdapter.js";
+import { MealNotificationScheduler } from "./mealNotifications.js";
+import { mealNotificationsCommand, mealNotificationStore } from "./commands/mealNotifications.js";
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates, ...(accessManager ? [GatewayIntentBits.GuildMembers] : [])]
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates,
+    ...(accessManager || (config.foodRoundOneRoleId && config.foodRoundTwoRoleId) ? [GatewayIntentBits.GuildMembers] : [])]
 });
 let csSyncRuntime: CsSyncRuntime | undefined;
 let csWebhookRuntime: CsWebhookRuntime | undefined;
 let csDiscordManager: CsDiscordManager | undefined;
 let csParticipantRoleRuntime: CsParticipantRoleRuntime | undefined;
+let csNotificationScheduler: CsNotificationScheduler | undefined;
+let mealParticipantRoleRuntime: MealParticipantRoleRuntime | undefined;
+let mealNotificationScheduler: MealNotificationScheduler | undefined;
 let accessSyncEnabled = false;
 let csRoleSyncEnabled = false;
 let csVoiceSyncEnabled = false;
@@ -64,6 +75,33 @@ process.on("unhandledRejection", (error) => {
 client.once(Events.ClientReady, async (readyClient) => {
   await loadBotMessages();
   console.log(`Logged in as ${readyClient.user.tag}.`);
+  csNotificationScheduler = new CsNotificationScheduler(
+    readyClient,
+    config.guildId,
+    config.csParticipantRoleId,
+    config.manualCsParticipantRoleId,
+    csNotificationScheduleStore
+  );
+  await csNotificationScheduler.start().catch(() => {
+    csNotificationScheduler = undefined;
+    console.error("CS notification schedules could not start; saved schedules remain unchanged.");
+  });
+  await startMealParticipantRoleSync();
+  if (config.mealTextChannelId && config.foodRoundOneRoleId && config.foodRoundTwoRoleId) {
+    mealNotificationScheduler = new MealNotificationScheduler(
+      readyClient,
+      config.guildId,
+      config.mealTextChannelId,
+      config.foodRoundOneRoleId,
+      config.foodRoundTwoRoleId,
+      mealNotificationStore,
+      () => getBotMessages().food
+    );
+    await mealNotificationScheduler.start().catch(() => {
+      mealNotificationScheduler = undefined;
+      console.error("Meal notifications could not start; saved meal schedules were preserved.");
+    });
+  }
   logVoiceManagerStatus(readyClient);
   if (accessInitializationError) {
     console.error(`Access sync paused: ${accessInitializationError} Existing voice channels remain unchanged; new channel creation is blocked until configuration is fixed.`);
@@ -124,6 +162,9 @@ async function shutdown(): Promise<void> {
   accessManager?.stop();
   csSyncRuntime?.stop();
   csParticipantRoleRuntime?.stop();
+  csNotificationScheduler?.stop();
+  mealParticipantRoleRuntime?.stop();
+  mealNotificationScheduler?.stop();
   await csWebhookRuntime?.stop();
   await sendCrewLogMessage(client, getBotText("bot.offline", {}, "logs"));
   client.destroy();
@@ -200,6 +241,18 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
     return;
   }
+  if (interaction.isModalSubmit() && interaction.customId.startsWith("mealnotifications:")) {
+    await mealNotificationsCommand.handleModal(interaction).catch(() => {
+      if (!interaction.replied) void interaction.reply({ content: getBotText("mealNotifications.failed"), flags: MessageFlags.Ephemeral });
+    });
+    return;
+  }
+  if (interaction.isModalSubmit() && interaction.customId.startsWith("csnotifications:")) {
+    await csNotificationModalCommand.handleModal(interaction).catch(() => {
+      if (!interaction.replied) void interaction.reply({ content: getBotText("csNotificationConsole.failed"), flags: MessageFlags.Ephemeral });
+    });
+    return;
+  }
   if (interaction.isButton() && interaction.customId === ACCESS_BUTTON_ID) {
     if (accessManager && accessSyncEnabled) {
       await accessManager.handleButton(interaction).catch(() => console.error("Access button response failed."));
@@ -239,8 +292,8 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
     console.error("Failed to handle voice state update", error);
   });
   if (csDiscordManager) {
-    void csDiscordManager.handleVoiceStateUpdate(newState).catch(() => {
-      console.error("CS lobby routing failed; member remains in the lobby.");
+    void csDiscordManager.handleVoiceStateUpdate(newState, oldState.channelId ?? undefined).catch(() => {
+      console.error("CS voice state handling failed.");
     });
   }
 });
@@ -259,6 +312,51 @@ client.on(Events.GuildMemberUpdate, (oldMember, newMember) => {
 });
 
 await client.login(config.token);
+
+async function startMealParticipantRoleSync(): Promise<void> {
+  mealParticipantRoleRuntime?.stop();
+  mealParticipantRoleRuntime = undefined;
+  if (!config.foodRoundOneRoleId || !config.foodRoundTwoRoleId) {
+    console.info("Meal role sync is not configured; set FOOD_ROUND_1_ROLE_ID and FOOD_ROUND_2_ROLE_ID to enable it.");
+    return;
+  }
+  const registrationConfigured = [config.registrationApiUrl, config.registrationTokenUrl,
+    config.registrationClientId, config.registrationClientSecret].every(Boolean);
+  if (!registrationConfigured) {
+    console.error("Meal role sync is paused; Registration API configuration is missing. Existing Pulje roles were preserved.");
+    return;
+  }
+  try {
+    const registration = new RegistrationClient({
+      apiUrl: config.registrationApiUrl!,
+      tokenUrl: config.registrationTokenUrl!,
+      clientId: config.registrationClientId!,
+      clientSecret: config.registrationClientSecret!
+    });
+      const adapter = new DiscordJsMealRoleAdapter(client, config.guildId, config.foodRoundOneRoleId, config.foodRoundTwoRoleId);
+    await adapter.validate();
+    mealParticipantRoleRuntime = new MealParticipantRoleRuntime(
+      { getParticipants: () => registration.getCsParticipants() },
+      adapter,
+      config.mealSyncIntervalMs,
+      summary => {
+        console.log("Meal role sync", summary);
+        void sendCrewLogMessage(client, getBotText("meal.rolesSummary", {
+          pulje1: summary.roundOneParticipants,
+          pulje2: summary.roundTwoParticipants,
+          added: summary.roundOneAdded + summary.roundTwoAdded,
+          removed: summary.roundOneRemoved + summary.roundTwoRemoved,
+          missing: summary.participantsMissingMealData
+        }, "logs"));
+      }
+    );
+    mealParticipantRoleRuntime.start();
+  } catch (error) {
+    mealParticipantRoleRuntime = undefined;
+    console.error("Meal role sync could not start; existing Pulje roles were preserved.",
+      error instanceof Error ? error.message : "unknown error");
+  }
+}
 
 async function startCsParticipantRoleSync(enabled = config.csRoleSyncEnabled, live = !config.csRoleSyncDryRun): Promise<void> {
   csParticipantRoleRuntime?.stop();
@@ -323,6 +421,8 @@ async function startCsVoiceSync(enabled = config.csVoiceSyncEnabled, live = !con
   csSyncRuntime = undefined;
   await csWebhookRuntime?.stop();
   csWebhookRuntime = undefined;
+  setCsWebhookRuntime(undefined);
+  csDiscordManager?.cancelPendingRoomDeletions();
   csDiscordManager = undefined;
   if (!enabled) {
     console.log("CS voice sync is disabled.");
@@ -393,7 +493,7 @@ async function startCsVoiceSync(enabled = config.csVoiceSyncEnabled, live = !con
         csDiscordManager = new CsDiscordManager(
           adapter,
           config.csLobbyChannelId!,
-          config.emptyChannelDeleteDelayMs,
+          config.csEmptyChannelDeleteDelayMs,
           undefined,
           !live
         );
@@ -418,9 +518,11 @@ async function startCsVoiceSync(enabled = config.csVoiceSyncEnabled, live = !con
         }
       });
       await csWebhookRuntime.start();
+      setCsWebhookRuntime(csWebhookRuntime);
       console.log(`CS MAT webhook receiver listening on private container port ${config.csWebhookPort}.`);
     } catch (error) {
       csWebhookRuntime = undefined;
+      setCsWebhookRuntime(undefined);
       csDiscordManager = undefined;
       const reason = error instanceof Error ? error.message : "ukjent oppstartsfeil";
       throw new Error(`CS MAT webhook kunne ikke starte: ${reason}`);

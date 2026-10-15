@@ -1,5 +1,7 @@
 node_modules/
 dist/
+data/*.json
+data/*.json.tmp
 .env
 .env2
 .env.2

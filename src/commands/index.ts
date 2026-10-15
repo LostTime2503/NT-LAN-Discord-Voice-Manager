@@ -13,6 +13,13 @@ import { cleanCsVcCommand } from "./cleanCsVc.js";
 import { notifyCsParticipantsCommand } from "./notifyCsParticipants.js";
 import { reloadMessagesCommand } from "./reloadMessages.js";
 import { csGiveAccessCommand } from "./csGiveAccess.js";
+import { makeCsTeamRoomsCommand } from "./makeCsTeamRooms.js";
+import { csNotificationModalCommand } from "./csNotificationModalCommand.js";
+import { mealNotificationsCommand } from "./mealNotifications.js";
+import { manualOverridesCommand } from "./manualOverrides.js";
+import { crewHelpCommand } from "./crewHelp.js";
+import { setupCrewHelpCommand } from "./setupCrewHelp.js";
+import { csWebhookCheckCommand } from "./csWebhookCheck.js";
 
 export const commands = [
   pingCommand,
@@ -29,7 +36,14 @@ export const commands = [
   cleanCsVcCommand,
   notifyCsParticipantsCommand,
   reloadMessagesCommand,
-  csGiveAccessCommand
+  csGiveAccessCommand,
+  makeCsTeamRoomsCommand,
+  csNotificationModalCommand,
+  mealNotificationsCommand,
+  manualOverridesCommand,
+  crewHelpCommand,
+  setupCrewHelpCommand,
+  csWebhookCheckCommand
 ];
 
 export function findCommand(commandName: string) {

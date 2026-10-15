@@ -17,6 +17,12 @@ test("manual CS links persist and cannot assign one SteamID64 to two Discord mem
     await store.load();
     await store.linkCsPlayer(discordOne, steamOne, discordTwo);
     await assert.rejects(store.linkCsPlayer(discordTwo, steamOne, discordOne), /already linked/);
+    const audit = await store.listManualOverrides();
+    assert.deepEqual(audit.access, []);
+    assert.deepEqual(audit.csLinks.map(({ discordId, linkedBy }) => ({ discordId, linkedBy })), [
+      { discordId: discordOne, linkedBy: discordTwo }
+    ]);
+    assert.match(audit.csLinks[0]!.linkedAt, /^\d{4}-\d{2}-\d{2}T/);
 
     const restarted = new ManualOverrideStore(path);
     await restarted.load();
@@ -43,6 +49,28 @@ test("manual CS link overrides a conflicting API Steam identity without modifyin
     assert.equal(apiParticipants.has(discordOne), true);
     assert.equal(csParticipants.has(discordOne), false);
     assert.equal(csParticipants.get(discordTwo)?.steamId, steamOne);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("manual Steam link preserves the API tournament enrollment fields", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "manual-cs-enrollment-"));
+  try {
+    const store = new ManualOverrideStore(join(directory, "overrides.json"));
+    await store.load();
+    await store.linkCsPlayer(discordTwo, steamOne, discordOne);
+    const result = await store.getCsParticipants(new Map([[
+      discordTwo,
+      { name: "Crew participant", firstName: "Crew", tournaments: ["cs2-wingman"], steamId: "76561198000000002" }
+    ]]));
+    assert.deepEqual(result.get(discordTwo), {
+      name: "Crew participant",
+      firstName: "Crew",
+      tournaments: ["cs2-wingman"],
+      steamId: steamOne,
+      manualCsLink: true
+    });
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

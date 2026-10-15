@@ -2,7 +2,7 @@ import { ChannelType, MessageFlags, PermissionFlagsBits, SlashCommandBuilder, ty
 import { createHash } from "node:crypto";
 import { isCrewMember } from "../accessManager.js";
 import { config } from "../config.js";
-import { createCsVoiceRoomOverwrites } from "../discordCsVoiceAdapter.js";
+import { createCsVoiceRoomOverwrites, formatCsRoomName } from "../discordCsVoiceAdapter.js";
 import { MatClient } from "../matClient.js";
 import { manualOverrideStore } from "../manualOverrides.js";
 import { RegistrationClient } from "../registrationClient.js";
@@ -19,8 +19,8 @@ function roomMarker(competition: Competition, tournamentId: number, teamId: stri
   return `[manual-cs-${digest}]`;
 }
 
-function safeChannelPart(value: string): string {
-  return value.normalize("NFC").replace(/[\p{Cc}\p{Cf}]/gu, "").replace(/\s+/g, " ").trim().slice(0, 75) || "lag";
+function hasRoomMarker(name: string, marker: string): boolean {
+  return name.startsWith(`${marker} `) || name.endsWith(` ${marker}`);
 }
 
 export const makeTeamChatsCommand = {
@@ -96,7 +96,7 @@ export const makeTeamChatsCommand = {
         return;
       }
       const missing = plan.rooms.filter(room => !category.children.cache.some(channel =>
-        channel.type === ChannelType.GuildVoice && channel.name.startsWith(roomMarker(competition, tournamentId, room.teamId))));
+        channel.type === ChannelType.GuildVoice && hasRoomMarker(channel.name, roomMarker(competition, tournamentId, room.teamId))));
       const competitionLabel = getBotText(competition === "main" ? "makeTeamChats.competition.main" : "makeTeamChats.competition.wingman");
       const description = getBotText("makeTeamChats.summary", {
         competition: competitionLabel,
@@ -126,7 +126,7 @@ export const makeTeamChatsCommand = {
       for (const room of missing) {
         const marker = roomMarker(competition, tournamentId, room.teamId);
         const channel = await interaction.guild.channels.create({
-          name: `${marker} ${safeChannelPart(room.channelName)}`.slice(0, 100),
+          name: formatCsRoomName(room.channelName, competition, marker),
           type: ChannelType.GuildVoice,
           parent: category.id,
           bitrate: interaction.guild.maximumBitrate,

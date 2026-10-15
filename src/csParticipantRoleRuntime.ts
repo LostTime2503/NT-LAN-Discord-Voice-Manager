@@ -53,10 +53,7 @@ export class CsParticipantRoleRuntime {
         dryRun: this.dryRun
       };
       for (const [discordId, participant] of participants) {
-        if (participant.manualCsLink) {
-          summary.manualLinks += 1;
-          continue;
-        }
+        if (participant.manualCsLink) summary.manualLinks += 1;
         if (!Array.isArray(participant.tournaments)) {
           summary.missingEnrollmentData += 1;
           continue;

@@ -127,6 +127,21 @@ export class ManualOverrideStore {
     return override ? { ...override } : undefined;
   }
 
+  async listManualOverrides(): Promise<{
+    access: Array<{ discordId: string; grantedBy: string; grantedAt: string }>;
+    csLinks: Array<{ discordId: string; linkedBy: string; linkedAt: string }>;
+  }> {
+    await this.load();
+    return {
+      access: Object.entries(this.state.access).map(([discordId, value]) => ({
+        discordId, grantedBy: value.grantedBy, grantedAt: value.grantedAt
+      })),
+      csLinks: Object.entries(this.state.csLinks).map(([discordId, value]) => ({
+        discordId, linkedBy: value.linkedBy, linkedAt: value.linkedAt
+      }))
+    };
+  }
+
   async getCsParticipants(baseParticipants: Map<string, RegisteredPerson>): Promise<Map<string, RegisteredPerson>> {
     await this.load();
     const result = new Map(baseParticipants);
@@ -138,6 +153,7 @@ export class ManualOverrideStore {
       result.set(discordId, {
         name: current?.name ?? "CS participant",
         firstName: current?.firstName ?? "CS participant",
+        ...(Array.isArray(current?.tournaments) ? { tournaments: [...current.tournaments] } : {}),
         steamId: link.steamId,
         manualCsLink: true
       });

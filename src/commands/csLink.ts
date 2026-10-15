@@ -14,7 +14,7 @@ export const csLinkCommand = {
 
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    if (!interaction.guild || interaction.guildId !== config.guildId || !config.manualCsParticipantRoleId || !config.crewRoleId) {
+    if (!interaction.guild || interaction.guildId !== config.guildId || !config.crewRoleId) {
       await interaction.editReply(getBotText("csLink.notConfigured"));
       return;
     }
@@ -32,25 +32,34 @@ export const csLinkCommand = {
         return;
       }
 
-      const role = await interaction.guild.roles.fetch(config.manualCsParticipantRoleId);
-      const bot = await interaction.guild.members.fetchMe();
-      if (!role || role.managed || !bot.permissions.has(PermissionFlagsBits.ManageRoles)
-        || bot.roles.highest.comparePositionTo(role) <= 0
-        || target.roles.highest.comparePositionTo(bot.roles.highest) >= 0) {
-        await interaction.editReply(getBotText("csLink.cannotManage"));
-        return;
+      const roleExempt = isCrewMember(target, config.crewRoleId);
+      let roleId: string | undefined;
+      if (!roleExempt) {
+        if (!config.manualCsParticipantRoleId) {
+          await interaction.editReply(getBotText("csLink.notConfigured"));
+          return;
+        }
+        const role = await interaction.guild.roles.fetch(config.manualCsParticipantRoleId);
+        const bot = await interaction.guild.members.fetchMe();
+        if (!role || role.managed || !bot.permissions.has(PermissionFlagsBits.ManageRoles)
+          || bot.roles.highest.comparePositionTo(role) <= 0
+          || target.roles.highest.comparePositionTo(bot.roles.highest) >= 0) {
+          await interaction.editReply(getBotText("csLink.cannotManage"));
+          return;
+        }
+        roleId = role.id;
       }
 
-      const alreadyHadRole = target.roles.cache.has(role.id);
-      if (!alreadyHadRole) await target.roles.add(role, "Crew granted manual CS participation access");
+      const alreadyHadRole = roleId ? target.roles.cache.has(roleId) : true;
+      if (roleId && !alreadyHadRole) await target.roles.add(roleId, "Crew granted manual CS participation access");
       try {
         await manualOverrideStore.linkCsPlayer(target.id, steamId, actor.id);
       } catch (error) {
-        if (!alreadyHadRole) await target.roles.remove(role, "Manual CS access could not be stored").catch(() => undefined);
+        if (roleId && !alreadyHadRole) await target.roles.remove(roleId, "Manual CS access could not be stored").catch(() => undefined);
         throw error;
       }
       await interaction.editReply(getBotText("csLink.complete", { userId: target.id }));
-      void sendCrewLogMessage(interaction.client, getBotText("cs.linkCreated", {}, "logs"));
+      void sendCrewLogMessage(interaction.client, getBotText(roleExempt ? "cs.linkCreatedExempt" : "cs.linkCreated", {}, "logs"));
     } catch (error) {
       await interaction.editReply(getBotText("csLink.failed"));
     }

@@ -42,6 +42,7 @@ export interface MatWebhookReceiverOptions {
   maxBodyBytes?: number;
   timestampToleranceMs?: number;
   now?: () => number;
+  onVerifiedRequest?: (request: { type: string; test: boolean }) => void;
   onEvent(event: MatWebhookEvent): Promise<void> | void;
 }
 
@@ -182,6 +183,9 @@ export function createMatWebhookReceiver(options: MatWebhookReceiverOptions): Se
       } catch {
         respond(response, 400);
         return;
+      }
+      if (isRecord(payload) && typeof payload.type === "string" && typeof payload.test === "boolean") {
+        options.onVerifiedRequest?.({ type: payload.type, test: payload.test });
       }
       if (isRecord(payload) && (payload.test === true
         || (typeof payload.type === "string" && acceptedEventTypes.has(payload.type)

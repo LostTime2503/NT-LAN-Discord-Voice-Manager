@@ -10,8 +10,10 @@ export interface BotMessages {
     button: Record<AccessResult | "wrongServer" | "checkFailed", string>;
   };
   cs: {
+    teamNames: string[];
     notifications: Record<string, { label: string; template: string; required: string[] }>;
   };
+  food: { reminder: string; atServing: string };
   commands: Record<string, string>;
   logs: Record<string, string>;
 }
@@ -19,7 +21,12 @@ export interface BotMessages {
 const defaultCsNotifications = {
   "turnering-snart": {
     label: "Turnering starter snart",
-    template: "Turneringen {competition} starter om {minutes} minutter. Bli med i {lobby}, så blir du sendt videre automatisk.",
+    template: "Turneringen {competition} starter om {minutes} minutter. Du får en ny beskjed når det er på tide å gå til venterommet.",
+    required: ["minutes"]
+  },
+  "turnering-venterom": {
+    label: "Gå til venterommet",
+    template: "Turneringen {competition} starter om {minutes} minutter. Bli med i {lobby} nå, så blir du sendt videre automatisk.",
     required: ["minutes", "lobby"]
   },
   "turnering-na": {
@@ -34,7 +41,62 @@ const defaultCsNotifications = {
   }
 } satisfies BotMessages["cs"]["notifications"];
 
+const defaultCsTeamNames = [
+  "KenoKnifers",
+  "TippingTerrorists",
+  "GrasrotGuardians",
+  "JackpotFraggers",
+  "OneTapFlax",
+  "ExtraKillers",
+  "OddsenSnipers",
+  "LottoVikings"
+];
+
+const defaultFoodMessages = {
+  reminder: "Matservering for Pulje {pulje} starter om {minutes} minutter kl. {time}.",
+  atServing: "Matservering for Pulje {pulje} starter nå kl. {time}."
+};
+
+const defaultCrewHelpAnnouncement = [
+  "Jeg hjelper Crew med nettsidetilgang, voice, CS og matvarsler her på serveren.",
+  "",
+  "Vanlige medlemmer må koble Discord-kontoen sin til profilen på ntlan.no for å få tilgang. Crew beholder tilgangen uten kobling, men oppfordres også til å koble seg. Da kan boten bruke profilnavn, turneringspåmelding og måltidsvalg.",
+  "",
+  "**Dette gjør jeg**",
+  "• Nettside: sjekker koblingen, setter profilbasert kallenavn og tildeler tilgang. `/giveaccess` er manuell reserve hvis koblingen ikke fungerer.",
+  "• Voice: lager en personlig kanal når medlemmet går til «Lag ny kanal her», og sletter tomme kanaler etter ventetid.",
+  "• CS: synkroniserer deltakerrollen fra påmelding. Når CS-voice er aktiv, bruker boten MAT-data og Steam-koblinger til å rute spillere. `/cs-link` kobler Discord til SteamID64 og gir manuell CS-rolle; `/cs-giveaccess` endrer manuell rolle uten Steam-kobling. `/cs-notifications` styrer Main/Wingman varslinger.",
+  "• Mat: synkroniserer Pulje-rollene fra måltidsvalg på ntlan.no og sender varsler. Bruk `/meal-notifications` for dato, tider og påminnelser.",
+  "CS-voice er ikke testet i live-turnering. Ved problemer kan Crew pause funksjonen og bruke `/make-cs-team-rooms` til faste voice-rom. Rommene følger ikke MAT; spillerne må finne rom selv.",
+  "",
+  "**Skru funksjoner av og på**",
+  "Kjør `/bot-settings` uten valg for status. Velg `funksjon` og sett `aktiv` til `true` eller `false` for å slå nettsidetilgang, vanlig voice, CS-rolletildeling eller CS-voice av/på.",
+  "Pause stanser ny automatikk, men sletter ikke roller eller kanaler. Påbegynte oppryddingstimere kan fullføre. Før live-endringer: sjekk forhåndsvisningen i loggen og kjør på nytt med `bekreft_live:true`.",
+  "",
+  "Trenger du hjelp med en kommando eller lyst å se oversikt over kommandoer? Kjør `/crew-help` for den private kommandooversikten."
+].join("\n");
+
 const defaultCommandMessages: Record<string, string> = {
+  "crewHelp.announcement": defaultCrewHelpAnnouncement,
+  "crewHelp.announcementTitle": "Hei! Jeg er NT-LAN Voice Manager",
+  "crewHelp.setup.notConfigured": "CREW_ROLE_ID må være satt, og velg en Crew-kanal eller konfigurer CREW_LOG_CHANNEL_ID.",
+  "crewHelp.setup.crewOnly": "Bare Crew og høyere kan publisere Crew-guiden.",
+  "crewHelp.setup.channelInvalid": "Velg en tekstkanal på denne serveren.",
+  "crewHelp.setup.permissions": "Boten trenger Send Messages, Embed Links og Read Message History i Crew-kanalen.",
+  "crewHelp.setup.posted": "Crew-guiden er publisert i <#{channelId}>.",
+  "crewHelp.setup.updated": "Crew-guiden er oppdatert i <#{channelId}>.",
+  "crewHelp.setup.failed": "Kunne ikke publisere Crew-guiden. Kontroller kanaltilgangene.",
+  "csWebhookCheck.notConfigured": "Webhook-sjekken er ikke konfigurert for denne serveren.",
+  "csWebhookCheck.crewOnly": "Bare Crew og høyere kan sjekke MAT-webhooken.",
+  "csWebhookCheck.notRunning": "CS-webhook-mottakeren kjører ikke. Slå på CS-voice i /bot-settings for å starte den.",
+  "csWebhookCheck.title": "MAT-webhook-sjekk",
+  "csWebhookCheck.localHealthy": "Lokal mottaker svarer på /healthz.",
+  "csWebhookCheck.localFailed": "Mottakeren er startet, men den lokale healthchecken feilet.",
+  "csWebhookCheck.testReceived": "Signert MAT-testevent mottatt {time}. Dette bekrefter at MAT når boten og at signaturen verifiseres.",
+  "csWebhookCheck.testMissing": "Ingen signert MAT-testevent er mottatt siden boten startet. Send «test event» i MAT, vent litt og kjør kommandoen igjen.",
+  "csWebhookCheck.lastSignedRequest": "Siste signerte request var {eventType} kl. {time}, men ingen testevent er registrert.",
+  "csWebhookCheck.failed": "Kunne ikke sjekke MAT-webhooken.",
+  "crewHelp.message": "**Tilgang og kallenavn**\n`/setup-access` · Publiser eller oppdater «få tilgang»-meldingen. Setter ikke kanalrettigheter.\n`/giveaccess` · Manuell tilgang og valgt kallenavn for ett medlem.\n`/clearaccessoverride` · Fjern en manuell tilgangsoverstyring.\n\n**Vanlig voice**\n`/setup-voice-manager` · Sett opp opprett-talekanal.\n`/voice-name` · Gi nytt navn til din egen midlertidige kanal.\n\n**CS**\n`/cs-link` · Koble Discord-medlem til Steam.\n`/cs-unlink` · Fjern Steam-kobling. `behold_rolle` er som standard ja; `nei` fjerner bare manuell CS-rolle.\n`/cs-giveaccess` · Gi eller fjern manuell CS-rolle.\n`/cs-status` · Sjekk CS-oppsett, MAT og koblinger.\n`/cs-webhook-check` · Sjekk lokal mottaker og signert MAT-testevent.\n`/cs-notifications` · Modal for Main/Wingman-tider og automatiske varsler.\n`/notify-cs-participants` · Send en umiddelbar CS-melding med preview og bekreftelse.\n`/make-team-chats` · Opprett manglende lagrom basert på aktive MAT-data.\n`/make-cs-team-rooms` · Opprett de åtte faste lagrommene uten MAT.\n`/clean-cs-vc` · Preview og bekreft sletting av voice-rom i CS-kategorien.\n\n**Mat**\n`/meal-notifications` · Modal for dato, Pulje 1/2-tider og påminnelser. Pulje-rollene styres separat av API-feltet `meals`.\n\n**Drift**\n`/bot-settings` · Status og av/på for automatiske funksjoner.\n`/manual-overrides` · Se hvem som ga manuell tilgang eller Steam-kobling, og når.\n`/reload-messages` · Last meldingsmaler og teamnavn fra `messages.json` på nytt.",
   "common.guildOnly": "Denne kommandoen kan bare brukes på en server.",
   "botSettings.notConfigured": "Bot-innstillinger er ikke konfigurert for denne serveren.",
   "botSettings.crewOnly": "Bare Crew og høyere kan endre bot-innstillinger.",
@@ -136,8 +198,9 @@ const defaultCommandMessages: Record<string, string> = {
   "csStatus.detail.permissionsFailed": "Discord-rettighetskontrollen feilet; se Dockhand-loggen.",
   "csUnlink.notConfigured": "CS-link er ikke konfigurert for denne serveren.",
   "csUnlink.crewOnly": "Bare Crew og høyere kan fjerne CS-lenker.",
-  "csUnlink.removed": "Den manuelle Steam-koblingen for <@{userId}> er fjernet. CS-rollen endres ikke.",
+  "csUnlink.removed": "Den manuelle Steam-koblingen for <@{userId}> er fjernet. Manuell CS-rolle ble {roleStatus}; API-styrt CS-rolle er ikke endret.",
   "csUnlink.notFound": "Fant ingen manuell CS-kobling for <@{userId}>.",
+  "csUnlink.cannotRemoveRole": "Kunne ikke fjerne MANUAL_CS_PARTICIPANT_ROLE_ID. Steam-koblingen er beholdt.",
   "csUnlink.failed": "Kunne ikke fjerne CS-lenken.",
   "giveAccess.notConfigured": "Manuell tilgang er ikke konfigurert for denne serveren.",
   "giveAccess.crewOnly": "Bare Crew og høyere kan gi manuell tilgang.",
@@ -165,6 +228,36 @@ const defaultCommandMessages: Record<string, string> = {
   "makeTeamChats.competition.main": "Hovedturnering",
   "makeTeamChats.competition.wingman": "Wingman",
   "makeTeamChats.summary": "{competition}: {plannedCount} gyldige lagrom, {missingCount} mangler, {skippedCount} utelatt på grunn av ufullstendige data.",
+  "makeFixedCsRooms.notConfigured": "CS-kategori og deltakerroller må være konfigurert før faste lagrom kan opprettes.",
+  "makeFixedCsRooms.crewOnly": "Bare Crew og høyere kan opprette faste CS-lagrom.",
+  "makeFixedCsRooms.preview": "{competition}: {createdCount} av {teamCount} faste lagrom mangler. Rom som opprettes: {teamNames}\n\nIngen Discord-endringer er gjort. Kjør igjen med bekreft:true og previewkode:{previewCode} innen 5 minutter.",
+  "makeFixedCsRooms.previewExpired": "Forhåndsvisningen mangler, er utløpt eller laglisten er endret. Kjør kommandoen på nytt uten bekreftelse.",
+  "makeFixedCsRooms.noPermission": "Boten mangler Manage Channels i CS-kategorien.",
+  "makeFixedCsRooms.complete": "Opprettet {createdCount} faste {competition}-rom. Laglisten kan endres i messages.json og lastes med /reload-messages.",
+  "makeFixedCsRooms.failed": "Kunne ikke forhåndsvise eller opprette de faste CS-lagrommene.",
+  "makeFixedCsRooms.competition.main": "Hovedturnering",
+  "makeFixedCsRooms.competition.wingman": "Wingman",
+  "csNotificationConsole.crewOnly": "Bare Crew og høyere kan administrere CS-varsler.",
+  "csNotificationConsole.failed": "Kunne ikke fullføre handlingen for CS-varselet.",
+  "csNotificationConsole.fieldsRequired": "Velg konkurranse og tekstkanal for å sende eller planlegge.",
+  "csNotificationConsole.timeRequired": "Oppgi tidspunkt som YYYY-MM-DD HH:mm i Europe/Oslo.",
+  "csNotificationConsole.timeRange": "Tidspunktet må være minst ett minutt fram og innen 90 dager.",
+  "csNotificationConsole.formExpired": "Skjemaet eller bekreftelsen er utløpt. Start handlingen på nytt.",
+  "csNotificationConsole.invalidMessage": "Meldingen må inneholde tekst og være kortere enn 2000 tegn.",
+  "csNotificationConsole.preview": "{competition} · {channel} · {time} · ping {ping}\n\n{message}\n\nBekreft handlingen eller avbryt.",
+  "csNotificationConsole.cancelled": "Handlingen ble avbrutt. Ingen melding er sendt eller planlagt.",
+  "csNotificationConsole.scheduled": "CS-melding {id} er planlagt til {time} (Europe/Oslo).",
+  "csNotificationConsole.sent": "CS-meldingen er sendt.",
+  "csNotificationConsole.channelUnavailable": "Tekstkanalen finnes ikke lenger i denne serveren.",
+  "csNotificationConsole.planIdRequired": "Velg en plan-ID fra forslagene.",
+  "csNotificationConsole.statusChanged": "Plan {id} er nå {status}.",
+  "csNotificationConsole.planNotFound": "Fant ikke planen. Kjør /cs-notifications handling:list.",
+  "csNotificationConsole.empty": "Ingen CS-varslingsplaner er lagret.",
+  "csNotificationConsole.listTitle": "CS-varslingsplaner:",
+  "mealNotifications.crewOnly": "Bare Crew og høyere kan endre måltidsvarsler.",
+  "mealNotifications.notConfigured": "MEAL_TEXT_CHANNEL_ID og begge FOOD_ROUND-rolle-ID-ene må være konfigurert.",
+  "mealNotifications.failed": "Kunne ikke lagre måltidsvarslingene.",
+  "mealNotifications.expired": "Måltidsmodalen er utløpt. Åpne /meal-notifications på nytt.",
   "notifyCsParticipants.notConfigured": "CS-varsling er ikke konfigurert for denne serveren.",
   "notifyCsParticipants.crewOnly": "Bare Crew og høyere kan sende CS-varsler.",
   "notifyCsParticipants.wrongChannel": "Velg en tekstkanal på denne serveren.",
@@ -217,6 +310,7 @@ const defaultLogMessages: Record<string, string> = {
   "access.manualCleared": "Manuell servertilgang fjernet; automatisk kontroll er gjenopptatt for medlemmet.",
   "cs.manualAccess": "Manuell CS-tilgang {action}.",
   "cs.linkCreated": "Manuell CS-deltakeradgang og Steam-kobling opprettet.",
+  "cs.linkCreatedExempt": "CS Steam-kobling opprettet for et medlem som allerede er unntatt fra CS-rollen.",
   "cs.linkRemoved": "Manuell Steam-identitetskobling fjernet; CS-deltakerrollen ble beholdt.",
   "cs.roomsCleaned": "CS-voiceopprydding fullført: {count} rom slettet; lobby beholdt.",
   "cs.roomsCreated": "Manuell CS-romoppretting: {competition}, opprettet {createdCount}, allerede til stede {existingCount}.",
@@ -229,6 +323,7 @@ const defaultLogMessages: Record<string, string> = {
   "settings.csVoice": "CS-voice {status}.",
   "access.summary": "Nettsidetilgangssynk ({mode}): {counts}.",
   "cs.roleSummary": "CS-rolletildeling ({mode}): {enrolled} påmeldte, {added} lagt til, {removed} fjernet, {missing} uten påmeldingsdata.",
+  "meal.rolesSummary": "Måltidsroller synkronisert: {pulje1} i Pulje 1, {pulje2} i Pulje 2, {added} lagt til, {removed} fjernet, {missing} uten måltidsdata.",
   "cs.webhookSummary": "CS webhook {tournament} {eventType}: {planned} rom i plan, {updated} oppdatert, {skipped} lag utelatt.",
   "cs.recoverySummary": "CS recovery-forhåndsvisning: {main} main-rom, {wingman} Wingman-rom, {unmatched} uten kobling.",
   "voice.channelCreated": "Vanlig midlertidig voice-kanal opprettet og eier flyttet inn.",
@@ -262,7 +357,8 @@ const defaultMessages: BotMessages = {
       checkFailed: "Kunne ikke fullføre kontrollen akkurat nå. Prøv igjen senere eller kontakt Crew."
     }
   },
-  cs: { notifications: defaultCsNotifications },
+  cs: { teamNames: defaultCsTeamNames, notifications: defaultCsNotifications },
+  food: defaultFoodMessages,
   commands: defaultCommandMessages,
   logs: defaultLogMessages
 };
@@ -281,6 +377,20 @@ export function parseBotMessages(value: unknown): BotMessages {
   const access = isRecord(value) && isRecord(value.access) ? value.access : {};
   const button = isRecord(access.button) ? access.button : {};
   const cs = isRecord(value) && isRecord(value.cs) ? value.cs : {};
+  const food = isRecord(value) && isRecord(value.food) ? value.food : {};
+  const rawTeamNames = Array.isArray(cs.teamNames) ? cs.teamNames : defaultCsTeamNames;
+  const teamNames: string[] = [];
+  const seenTeamNames = new Set<string>();
+  for (const value of rawTeamNames) {
+    if (typeof value !== "string") continue;
+    const name = value.normalize("NFC").replace(/[\p{Cc}\p{Cf}]/gu, "").trim().replace(/\s+/g, " ").slice(0, 60);
+    const key = name.toLocaleLowerCase("nb-NO");
+    if (!name || seenTeamNames.has(key)) continue;
+    seenTeamNames.add(key);
+    teamNames.push(name);
+    if (teamNames.length === 32) break;
+  }
+  if (!teamNames.length) teamNames.push(...defaultCsTeamNames);
   const notifications = isRecord(cs.notifications) ? cs.notifications : {};
   const commandOverrides = isRecord(value) && isRecord(value.commands) ? value.commands : {};
   const logOverrides = isRecord(value) && isRecord(value.logs) ? value.logs : {};
@@ -320,15 +430,25 @@ export function parseBotMessages(value: unknown): BotMessages {
         checkFailed: validText(button.checkFailed, defaultButton.checkFailed)
       }
     },
-    cs: { notifications: parsedNotifications },
+    cs: { teamNames, notifications: parsedNotifications },
+    food: {
+      reminder: validText(food.reminder, defaultFoodMessages.reminder).slice(0, 1_000),
+      atServing: validText(food.atServing, defaultFoodMessages.atServing).slice(0, 1_000)
+    },
     commands: parseTextCatalog(commandOverrides, defaultCommandMessages),
     logs: parseTextCatalog(logOverrides, defaultLogMessages)
   };
 }
 
 function parseTextCatalog(overrides: Record<string, unknown>, defaults: Record<string, string>): Record<string, string> {
-  return Object.fromEntries(Object.entries(defaults).map(([key, fallback]) =>
-    [key, validText(overrides[key], fallback).slice(0, 2_000)]));
+  return Object.fromEntries(Object.entries(defaults).map(([key, fallback]) => {
+    const override = overrides[key];
+    const text = Array.isArray(override) && override.every(line => typeof line === "string")
+      ? override.join("\n")
+      : override;
+    const maximumLength = key === "crewHelp.announcement" ? 4_000 : 2_000;
+    return [key, validText(text, fallback).slice(0, maximumLength)];
+  }));
 }
 
 export function getBotText(

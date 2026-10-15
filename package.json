@@ -8,6 +8,7 @@
     "dev": "tsx src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
+    "test:cs-match": "node --import dotenv/config --import tsx scripts/test-cs-match.mjs",
     "deploy:commands": "tsx src/deploy-commands.ts",
     "probe:mat": "node scripts/probe-mat-public.mjs",
     "probe:mat-readonly": "node scripts/probe-mat-readonly.mjs",

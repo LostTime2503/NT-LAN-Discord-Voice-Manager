@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ManualOverrideStore } from "../src/manualOverrides.js";
 import { getBotText, parseBotMessages, renderCsNotification } from "../src/messages.js";
+import { shouldSyncCsParticipantRole } from "../src/discordCsVoiceAdapter.js";
 
 const settings: AccessSettings = {
   guildId: "123456789012345678", accessRoleId: "123456789012345679", manualAccessRoleId: "123456789012345686",
@@ -357,11 +358,31 @@ test("messages.json includes every built-in command and audit message and keeps 
     commands?: Record<string, unknown>;
     logs?: Record<string, unknown>;
     access?: { entry?: string };
+    cs?: { teamNames?: string[] };
+    food?: { reminder?: string; atServing?: string };
   };
   const parsed = parseBotMessages(raw);
-  for (const key of Object.keys(parsed.commands)) assert.equal(typeof raw.commands?.[key], "string", `Missing messages.json commands.${key}`);
+  for (const key of Object.keys(parsed.commands)) {
+    const value = raw.commands?.[key];
+    assert.equal(typeof value === "string" || (key.startsWith("crewHelp.") && Array.isArray(value)), true, `Missing messages.json commands.${key}`);
+  }
   for (const key of Object.keys(parsed.logs)) assert.equal(typeof raw.logs?.[key], "string", `Missing messages.json logs.${key}`);
+  const crewHelpLines = raw.commands?.["crewHelp.message"] as string[];
+  assert.equal(parsed.commands["crewHelp.message"], crewHelpLines.join("\n"));
+  const crewAnnouncementLines = raw.commands?.["crewHelp.announcement"] as string[];
+  assert.equal(parsed.commands["crewHelp.announcement"], crewAnnouncementLines.join("\n"));
+  assert.equal(parseBotMessages({}).commands["crewHelp.announcement"], parsed.commands["crewHelp.announcement"]);
+  assert.equal(parsed.commands["crewHelp.announcementTitle"], raw.commands?.["crewHelp.announcementTitle"]);
   assert.equal(parsed.access.entry, raw.access?.entry);
+  assert.deepEqual(parsed.cs.teamNames, raw.cs?.teamNames);
+  assert.equal(parsed.cs.teamNames.length, 8);
+  assert.equal(parsed.food.reminder, raw.food?.reminder);
+  assert.equal(parsed.food.atServing, raw.food?.atServing);
+});
+
+test("command text catalogs accept editable line arrays", () => {
+  const messages = parseBotMessages({ commands: { "crewHelp.message": ["**Crew**", "", "`/crew-help`"] } });
+  assert.equal(messages.commands["crewHelp.message"], "**Crew**\n\n`/crew-help`");
 });
 
 test("CS notification templates validate placeholders and require configured values", () => {
@@ -583,6 +604,17 @@ test("voice access uses role or crew exemption only, and checks guild scope", ()
   assert.equal(manager.canUseVoice(outside.member), false);
   const dryRun = new AccessManager({ ...settings, dryRun: true }, async () => new Map());
   assert.equal(dryRun.canUseVoice(fixture().member), false);
+});
+
+test("CS automatic role sync exempts Crew, admins, server owner, and roles above Crew", () => {
+  assert.equal(shouldSyncCsParticipantRole(fixture({ crew: true }).member, settings.crewRoleId), true);
+  for (const options of [{ higher: true }, { administrator: true }, { owner: true }]) {
+    const member = fixture(options).member;
+    if ("administrator" in options) member.permissions.add(PermissionFlagsBits.Administrator);
+    if ("owner" in options) Object.assign(member.guild, { ownerId: member.id });
+    assert.equal(shouldSyncCsParticipantRole(member, settings.crewRoleId), false);
+  }
+  assert.equal(shouldSyncCsParticipantRole(fixture().member, settings.crewRoleId), true);
 });
 
 test("concurrent checks share processing and API failure causes no mutations", async () => {

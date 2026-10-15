@@ -7,12 +7,14 @@ const enrolledId = "123456789012345678";
 const withdrawnId = "123456789012345679";
 const missingId = "123456789012345680";
 const manualId = "123456789012345681";
+const manualEnrolledId = "123456789012345682";
 
 const participants = new Map<string, RegisteredPerson>([
   [enrolledId, { name: "Main", firstName: "Main", tournaments: ["cs2"] }],
   [withdrawnId, { name: "Withdrawn", firstName: "Withdrawn", tournaments: [] }],
   [missingId, { name: "Missing", firstName: "Missing" }],
-  [manualId, { name: "Manual", firstName: "Manual", steamId: "76561198000000004", manualCsLink: true }]
+  [manualId, { name: "Manual", firstName: "Manual", steamId: "76561198000000004", manualCsLink: true }],
+  [manualEnrolledId, { name: "Crew Main", firstName: "Crew", tournaments: ["cs2"], steamId: "76561198000000005", manualCsLink: true }]
 ]);
 
 test("role dry-run reports enrollment but performs no role mutations", async () => {
@@ -26,11 +28,11 @@ test("role dry-run reports enrollment but performs no role mutations", async () 
     summary => { report = summary; }
   );
   assert.deepEqual(await runtime.runOnce(), {
-    participants: 4,
-    enrolled: 1,
+    participants: 5,
+    enrolled: 2,
     explicitlyNotEnrolled: 1,
-    missingEnrollmentData: 1,
-    manualLinks: 1,
+    missingEnrollmentData: 2,
+    manualLinks: 2,
     rolesAdded: 0,
     rolesRemoved: 0,
     dryRun: true
@@ -39,7 +41,7 @@ test("role dry-run reports enrollment but performs no role mutations", async () 
   assert.deepEqual(calls, []);
 });
 
-test("live role sync grants enrolled members, removes explicit opt-outs, and preserves missing/manual entries", async () => {
+test("live role sync follows explicit enrollment while preserving missing enrollment data", async () => {
   const calls: Array<{ memberId: string; shouldHaveRole: boolean }> = [];
   const runtime = new CsParticipantRoleRuntime(
     { getParticipants: async () => new Map(), getCsParticipants: async () => participants },
@@ -49,11 +51,12 @@ test("live role sync grants enrolled members, removes explicit opt-outs, and pre
     () => undefined
   );
   const summary = await runtime.runOnce();
-  assert.equal(summary?.rolesAdded, 1);
+  assert.equal(summary?.rolesAdded, 2);
   assert.equal(summary?.rolesRemoved, 1);
   assert.deepEqual(calls, [
     { memberId: enrolledId, shouldHaveRole: true },
-    { memberId: withdrawnId, shouldHaveRole: false }
+    { memberId: withdrawnId, shouldHaveRole: false },
+    { memberId: manualEnrolledId, shouldHaveRole: true }
   ]);
 });
 

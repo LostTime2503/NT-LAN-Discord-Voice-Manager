@@ -1,14 +1,17 @@
 import {
   ChannelType,
+  DiscordAPIError,
   PermissionFlagsBits,
   PermissionsBitField,
   type Client,
   type Guild,
+  type GuildBasedChannel,
   type OverwriteResolvable,
   type VoiceBasedChannel
 } from "discord.js";
 import { createHash } from "node:crypto";
-import type { CsDiscordAdapter, CsVoiceRoomRequest } from "./csDiscordManager.js";
+import type { CsDiscordAdapter, CsVoiceRoomRequest, CsVoiceRoomScope } from "./csDiscordManager.js";
+import { isCrewMember } from "./accessManager.js";
 
 export interface CsVoicePermissionIds {
   everyoneRoleId: string;
@@ -17,6 +20,14 @@ export interface CsVoicePermissionIds {
   crewRoleId: string;
   botUserId: string;
   memberIds: string[];
+}
+
+export function formatCsRoomName(name: string, scope: CsVoiceRoomScope, marker: string): string {
+  const scopeName = scope === "wingman" ? "Wingman" : "CS";
+  const cleanName = name.normalize("NFC").replace(/[\p{Cc}\p{Cf}]/gu, "").trim()
+    .replace(/\s+/g, " ").replace(new RegExp(`^${scopeName}\\s+`, "i"), "").slice(0, 40);
+  if (!cleanName) throw new Error("MAT team name cannot be used for a voice room.");
+  return `${scopeName} - ${cleanName} ${marker}`;
 }
 
 export class ManualCsRoomDriftError extends Error {
@@ -39,6 +50,8 @@ export function createCsVoiceRoomOverwrites(ids: CsVoicePermissionIds): Overwrit
 }
 
 export class DiscordJsCsVoiceAdapter implements CsDiscordAdapter {
+  private readonly roomDeleteTimers = new Map<string, NodeJS.Timeout>();
+
   constructor(
     private readonly client: Client,
     private readonly guildId: string,
@@ -111,15 +124,15 @@ export class DiscordJsCsVoiceAdapter implements CsDiscordAdapter {
 
     let channel: VoiceBasedChannel | null = null;
     if (existingChannelId) {
-      const existing = await guild.channels.fetch(existingChannelId);
+      const existing = await this.fetchChannelIfPresent(guild, existingChannelId);
       if (existing && existing.type !== ChannelType.GuildVoice) {
         throw new ManualCsRoomDriftError("MAT-owned voice channel was replaced with a different channel type.");
       }
       if (existing?.type === ChannelType.GuildVoice) {
-        if (existing.parentId !== category.id || !existing.name.startsWith(this.roomMarker(request))) {
+        if (existing.parentId !== category.id || !this.hasRoomMarker(existing.name, request)) {
           throw new ManualCsRoomDriftError("MAT-owned voice channel was moved or its ownership marker changed.");
         }
-        if (previousRequest && (existing.name !== this.channelName(previousRequest)
+        if (previousRequest && (!this.matchesManagedRoomName(existing.name, previousRequest)
           || !this.hasExpectedOverwrites(existing, guild, createCsVoiceRoomOverwrites({
             everyoneRoleId: guild.roles.everyone.id,
             participantRoleId: this.participantRoleId,
@@ -135,7 +148,7 @@ export class DiscordJsCsVoiceAdapter implements CsDiscordAdapter {
     }
     if (!channel) {
       const recovered = category.children.cache.find(child => child.type === ChannelType.GuildVoice
-        && child.name.startsWith(this.roomMarker(request)));
+        && this.hasRoomMarker(child.name, request));
       if (recovered?.type === ChannelType.GuildVoice) channel = recovered;
     }
 
@@ -182,14 +195,15 @@ export class DiscordJsCsVoiceAdapter implements CsDiscordAdapter {
     } catch {
       return false;
     }
-    const hasCsAccess = member.roles.cache.has(this.participantRoleId)
+    const hasCsAccess = !shouldSyncCsParticipantRole(member, this.crewRoleId)
+      || member.roles.cache.has(this.participantRoleId)
       || Boolean(this.manualParticipantRoleId && member.roles.cache.has(this.manualParticipantRoleId))
       || member.roles.cache.has(this.crewRoleId);
     if (member.user.bot || !member.voice.channelId || !allowedSourceChannelIds.includes(member.voice.channelId)
       || !hasCsAccess) return false;
     const channel = await guild.channels.fetch(channelId);
     if (!channel || channel.type !== ChannelType.GuildVoice || channel.parentId !== this.categoryId
-      || !/^\[MAT-[a-f0-9]{12}\] /.test(channel.name)) {
+      || !this.hasManagedRoomMarker(channel.name)) {
       throw new Error("Target CS voice channel is not a bot-owned room.");
     }
     await member.voice.setChannel(channel, "Route MAT-assigned player from CS lobby");
@@ -205,9 +219,57 @@ export class DiscordJsCsVoiceAdapter implements CsDiscordAdapter {
       return false;
     }
     return !member.user.bot && member.voice.channelId === lobbyChannelId
-      && (member.roles.cache.has(this.participantRoleId)
+      && (!shouldSyncCsParticipantRole(member, this.crewRoleId)
+        || member.roles.cache.has(this.participantRoleId)
         || Boolean(this.manualParticipantRoleId && member.roles.cache.has(this.manualParticipantRoleId))
-        || member.roles.cache.has(this.crewRoleId));
+        || member.roles.cache.has(this.crewRoleId)
+        );
+  }
+
+  async canRouteMemberFromCsVoice(memberId: string, lobbyChannelId: string): Promise<boolean> {
+    const guild = await this.client.guilds.fetch(this.guildId);
+    let member;
+    try {
+      member = await guild.members.fetch(memberId);
+    } catch {
+      return false;
+    }
+    if (member.user.bot || !member.voice.channelId) return false;
+    if (member.voice.channelId !== lobbyChannelId) {
+      const source = await guild.channels.fetch(member.voice.channelId);
+      if (!source || source.type !== ChannelType.GuildVoice || source.parentId !== this.categoryId) return false;
+    }
+    return !shouldSyncCsParticipantRole(member, this.crewRoleId)
+      || member.roles.cache.has(this.participantRoleId)
+      || Boolean(this.manualParticipantRoleId && member.roles.cache.has(this.manualParticipantRoleId))
+      || member.roles.cache.has(this.crewRoleId);
+  }
+
+  async moveMemberFromCsVoice(memberId: string, channelId: string, lobbyChannelId: string): Promise<boolean> {
+    const guild = await this.client.guilds.fetch(this.guildId);
+    let member;
+    try {
+      member = await guild.members.fetch(memberId);
+    } catch {
+      return false;
+    }
+    const sourceChannelId = member.voice.channelId;
+    const hasCsAccess = !shouldSyncCsParticipantRole(member, this.crewRoleId)
+      || member.roles.cache.has(this.participantRoleId)
+      || Boolean(this.manualParticipantRoleId && member.roles.cache.has(this.manualParticipantRoleId))
+      || member.roles.cache.has(this.crewRoleId);
+    if (member.user.bot || !sourceChannelId || sourceChannelId === channelId || !hasCsAccess) return false;
+    if (sourceChannelId !== lobbyChannelId) {
+      const source = await guild.channels.fetch(sourceChannelId);
+      if (!source || source.type !== ChannelType.GuildVoice || source.parentId !== this.categoryId) return false;
+    }
+    const target = await guild.channels.fetch(channelId);
+    if (!target || target.type !== ChannelType.GuildVoice || target.parentId !== this.categoryId
+      || !/^\[MAT-[a-f0-9]{12}\] /.test(target.name)) {
+      throw new Error("Target CS voice channel is not a bot-owned room.");
+    }
+    await member.voice.setChannel(target, "Route MAT-assigned player to updated CS team room");
+    return true;
   }
 
   async setParticipantRole(memberId: string, shouldHaveRole: boolean): Promise<boolean> {
@@ -218,7 +280,7 @@ export class DiscordJsCsVoiceAdapter implements CsDiscordAdapter {
     } catch {
       return false;
     }
-    if (member.user.bot) return false;
+    if (member.user.bot || !shouldSyncCsParticipantRole(member, this.crewRoleId)) return false;
     const role = await guild.roles.fetch(this.participantRoleId);
     const botMember = await guild.members.fetchMe();
     if (!role || role.managed || role.id === guild.id
@@ -238,7 +300,7 @@ export class DiscordJsCsVoiceAdapter implements CsDiscordAdapter {
     const guild = await this.client.guilds.fetch(this.guildId);
     const channel = await guild.channels.fetch(channelId);
     if (!channel || channel.type !== ChannelType.GuildVoice || channel.parentId !== this.categoryId
-      || !/^\[MAT-[a-f0-9]{12}\] /.test(channel.name)) return;
+      || !this.hasManagedRoomMarker(channel.name)) return;
     if (channel.permissionOverwrites.cache.has(memberId)) {
       await channel.permissionOverwrites.delete(memberId, "CS tournament enrollment ended");
     }
@@ -256,13 +318,95 @@ export class DiscordJsCsVoiceAdapter implements CsDiscordAdapter {
     }
   }
 
+  async deleteRoomWhenEmpty(channelId: string, delayMs: number, onDeleted: () => Promise<void>): Promise<void> {
+    if (this.roomDeleteTimers.has(channelId)) return;
+    const guild = await this.client.guilds.fetch(this.guildId);
+    const channel = await this.fetchChannelIfPresent(guild, channelId);
+    if (!channel) {
+      await onDeleted();
+      return;
+    }
+    if (!this.isOwnedCsRoom(channel) || channel.members.size > 0) return;
+    const timer = setTimeout(() => {
+      this.roomDeleteTimers.delete(channelId);
+      void this.deleteEmptyRoomIfStillOwned(channelId, onDeleted).catch(() => {
+        console.error("Failed to delete an empty CS voice room; ownership state was preserved.");
+      });
+    }, delayMs);
+    timer.unref();
+    this.roomDeleteTimers.set(channelId, timer);
+  }
+
+  cancelRoomDeletion(channelId: string): void {
+    const timer = this.roomDeleteTimers.get(channelId);
+    if (!timer) return;
+    clearTimeout(timer);
+    this.roomDeleteTimers.delete(channelId);
+  }
+
+  cancelAllRoomDeletions(): void {
+    for (const channelId of this.roomDeleteTimers.keys()) this.cancelRoomDeletion(channelId);
+  }
+
+  private async deleteEmptyRoomIfStillOwned(channelId: string, onDeleted: () => Promise<void>): Promise<void> {
+    const guild = await this.client.guilds.fetch(this.guildId);
+    const channel = await this.fetchChannelIfPresent(guild, channelId);
+    if (!channel) {
+      await onDeleted();
+      return;
+    }
+    if (!this.isOwnedCsRoom(channel) || channel.members.size > 0) return;
+    await channel.delete("MAT-owned CS voice room remained empty");
+    await onDeleted();
+  }
+
+  private async fetchChannelIfPresent(guild: Guild, channelId: string): Promise<GuildBasedChannel | null> {
+    try {
+      return await guild.channels.fetch(channelId);
+    } catch (error) {
+      if (error instanceof DiscordAPIError && error.code === 10003) return null;
+      throw error;
+    }
+  }
+
+  private isOwnedCsRoom(channel: unknown): channel is VoiceBasedChannel {
+    return Boolean(channel && typeof channel === "object"
+      && "type" in channel && channel.type === ChannelType.GuildVoice
+      && "parentId" in channel && channel.parentId === this.categoryId
+      && "name" in channel && typeof channel.name === "string"
+      && this.hasManagedRoomMarker(channel.name));
+  }
+
   private roomMarker(request: CsVoiceRoomRequest): string {
     return `[MAT-${createHash("sha256").update(request.key).digest("hex").slice(0, 12)}]`;
   }
 
-  private channelName(request: CsVoiceRoomRequest): string {
+  private hasRoomMarker(name: string, request: CsVoiceRoomRequest): boolean {
+    const marker = this.roomMarker(request);
+    return name.startsWith(`${marker} `) || name.endsWith(` ${marker}`);
+  }
+
+  private hasManagedRoomMarker(name: string): boolean {
+    return /^\[MAT-[a-f0-9]{12}\] /.test(name) || / \[MAT-[a-f0-9]{12}\]$/.test(name);
+  }
+
+  private matchesManagedRoomName(name: string, request: CsVoiceRoomRequest): boolean {
+    return name === this.channelName(request) || name === this.legacyChannelName(request);
+  }
+
+  private legacyChannelName(request: CsVoiceRoomRequest): string {
     const cleanName = request.name.normalize("NFC").replace(/[\p{Cc}\p{Cf}]/gu, "").trim().replace(/\s+/g, " ");
-    if (!cleanName) throw new Error("MAT team name cannot be used for a voice room.");
     return `${this.roomMarker(request)} ${cleanName}`.slice(0, 100);
   }
+
+  private channelName(request: CsVoiceRoomRequest): string {
+    return formatCsRoomName(request.name, request.scope, this.roomMarker(request));
+  }
+}
+
+export function shouldSyncCsParticipantRole(member: Parameters<typeof isCrewMember>[0], crewRoleId: string): boolean {
+  if (member.id === member.guild.ownerId || member.permissions.has(PermissionFlagsBits.Administrator)) return false;
+  const crewRole = member.guild.roles.cache.get(crewRoleId);
+  if (!crewRole) return false;
+  return member.roles.cache.has(crewRoleId) || member.roles.highest.comparePositionTo(crewRole) <= 0;
 }

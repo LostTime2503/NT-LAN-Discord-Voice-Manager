@@ -3,7 +3,14 @@ export interface RegisteredPerson {
   firstName: string;
   steamId?: string;
   tournaments?: string[];
+  meals?: RegisteredMeal[];
   manualCsLink?: boolean;
+}
+
+export interface RegisteredMeal {
+  day: "friday" | "saturday" | "sunday";
+  round: "Pulje 1" | "Pulje 2";
+  time: string;
 }
 
 export interface RegistrationOptions {
@@ -26,6 +33,26 @@ function parseTournaments(value: unknown): string[] | undefined {
   return [...new Set(value as string[])];
 }
 
+function parseMeals(value: unknown): RegisteredMeal[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const meals: RegisteredMeal[] = [];
+  for (const meal of value) {
+    if (!isRecord(meal) || typeof meal.day !== "string"
+      || !["friday", "saturday", "sunday"].includes(meal.day.toLowerCase())
+      || typeof meal.round !== "string" || typeof meal.time !== "string" || !/^\d{2}:\d{2}$/.test(meal.time)) return undefined;
+    const [hour, minute] = meal.time.split(":").map(Number);
+    if (hour! > 23 || minute! > 59) return undefined;
+    const roundNumber = /^pulje\s*([12])$/i.exec(meal.round.trim())?.[1];
+    if (!roundNumber) return undefined;
+    meals.push({
+      day: meal.day.toLowerCase() as RegisteredMeal["day"],
+      round: roundNumber === "1" ? "Pulje 1" : "Pulje 2",
+      time: meal.time
+    });
+  }
+  return meals;
+}
+
 export function parseParticipants(payload: unknown): Map<string, RegisteredPerson> {
   if (!isRecord(payload) || !isRecord(payload.data) || !isRecord(payload.data.participants)) {
     throw new Error("Registration API returned an invalid participants object.");
@@ -37,7 +64,13 @@ export function parseParticipants(payload: unknown): Map<string, RegisteredPerso
       throw new Error("Registration API returned an invalid participant.");
     }
     const steamId = parseSteamId(person.steamId);
-    result.set(discordId, { name: person.name, firstName: person.firstName, ...(steamId ? { steamId } : {}) });
+    const meals = parseMeals(person.meals);
+    result.set(discordId, {
+      name: person.name,
+      firstName: person.firstName,
+      ...(steamId ? { steamId } : {}),
+      ...(meals ? { meals } : {})
+    });
   }
   return result;
 }
@@ -66,8 +99,8 @@ export function parseCsParticipants(payload: unknown): Map<string, RegisteredPer
       if (participants.has(child.discordId)) {
         if (topLevelDiscordIds.has(child.discordId)) {
           const parent = participants.get(child.discordId)!;
-          const { steamId: _steamId, ...withoutSteamId } = parent;
-          participants.set(child.discordId, withoutSteamId);
+          const { steamId: _steamId, tournaments: _tournaments, meals: _meals, ...ambiguousIdentity } = parent;
+          participants.set(child.discordId, ambiguousIdentity);
         } else {
           duplicateDiscordIds.add(child.discordId);
         }
@@ -75,11 +108,13 @@ export function parseCsParticipants(payload: unknown): Map<string, RegisteredPer
       }
       const steamId = parseSteamId(child.steamId);
       const tournaments = parseTournaments(child.tournaments);
+      const meals = parseMeals(child.meals);
       participants.set(child.discordId, {
         name: child.name,
         firstName: child.firstName,
         ...(tournaments ? { tournaments } : {}),
-        ...(steamId ? { steamId } : {})
+        ...(steamId ? { steamId } : {}),
+        ...(meals ? { meals } : {})
       });
     }
   }
@@ -87,7 +122,7 @@ export function parseCsParticipants(payload: unknown): Map<string, RegisteredPer
   for (const discordId of duplicateDiscordIds) {
     const person = participants.get(discordId);
     if (person) {
-      const { steamId: _steamId, tournaments: _tournaments, ...ambiguousChild } = person;
+      const { steamId: _steamId, tournaments: _tournaments, meals: _meals, ...ambiguousChild } = person;
       participants.set(discordId, ambiguousChild);
     }
   }

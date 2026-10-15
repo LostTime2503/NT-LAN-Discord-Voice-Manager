@@ -14,12 +14,40 @@ import {
 import type { MatBracketSummary, MatClient, MatMatchSnapshot } from "../src/matClient.js";
 import type { RegisteredPerson } from "../src/registrationClient.js";
 import { CsDiscordManager, type CsDiscordAdapter } from "../src/csDiscordManager.js";
+import type { MatTournament } from "../src/matClient.js";
 
 const secret = "synthetic-webhook-secret-with-enough-entropy";
 const discordOne = "123456789012345678";
 const discordTwo = "123456789012345679";
 const steamOne = "76561198000000001";
 const steamTwo = "76561198000000002";
+
+function signedReadyRequest(tournamentId: number, id = "runtime-test-event") {
+  const payload = {
+    id,
+    type: "match.ready",
+    test: false,
+    data: {
+      sequence: 1,
+      match: {
+        id: 12,
+        slug: "fixture-match",
+        status: "loaded",
+        game: "cs2",
+        tournament: { id: tournamentId },
+        team1: { id: "team-one", name: "private", tag: "A", players: [{ steam_id64: steamOne }] },
+        team2: { id: "team-two", name: "private", tag: "B", players: [{ steam_id64: steamTwo }] }
+      }
+    }
+  };
+  const body = Buffer.from(JSON.stringify(payload));
+  const timestamp = Math.floor(Date.now() / 1000);
+  const digest = createHmac("sha256", secret).update(`${timestamp}.`).update(body).digest("hex");
+  return {
+    body,
+    headers: { "content-type": "application/json", "x-at-signature": `t=${timestamp},v1=${digest}` }
+  };
+}
 
 test("Wingman recovery selects one active match from a valid 2v2 shuffle bracket", () => {
   const bracket: MatBracketSummary = {
@@ -195,6 +223,164 @@ test("runtime startup discovers Main/Wingman formats and restores the active Win
     await runtime.start();
     assert.equal(fetchedMatchSlug, "current");
     assert.deepEqual(await manager.getRooms(), []);
+  } finally {
+    await runtime.stop();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("webhook ACK follows durable acceptance without waiting for MAT discovery", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "cs-webhook-ack-"));
+  let discoveryCalls = 0;
+  let releaseDiscovery!: (tournaments: MatTournament[]) => void;
+  const delayedDiscovery = new Promise<MatTournament[]>(resolve => { releaseDiscovery = resolve; });
+  const store = new CsEventStore(join(directory, "events.json"));
+  const runtime = new CsWebhookRuntime({
+    secret,
+    port: 0,
+    host: "127.0.0.1",
+    intervalMs: 60_000,
+    mat: {
+      getTournaments: async () => {
+        discoveryCalls += 1;
+        if (discoveryCalls === 1) return [{ id: 3, type: "single_elimination", status: "active", teamSize: 5 }];
+        return delayedDiscovery;
+      }
+    } as unknown as MatClient,
+    registration: { getParticipants: async () => new Map() },
+    store,
+    report: () => undefined
+  });
+
+  try {
+    await runtime.start();
+    const address = runtime.address;
+    assert.ok(address);
+    const request = signedReadyRequest(99, "unknown-tournament-event");
+    const responsePromise = fetch(`http://127.0.0.1:${address.port}/webhooks/mat`, {
+      method: "POST",
+      headers: request.headers,
+      body: request.body
+    });
+    const response = await Promise.race([
+      responsePromise,
+      new Promise<null>(resolve => setTimeout(() => resolve(null), 250))
+    ]);
+    assert.ok(response, "receiver should ACK without waiting for MAT discovery");
+    assert.equal(response.status, 202);
+    assert.deepEqual((await store.getPending()).map(event => event.id), ["unknown-tournament-event"]);
+  } finally {
+    releaseDiscovery([{ id: 3, type: "single_elimination", status: "active", teamSize: 5 }]);
+    await runtime.stop();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("runtime stop waits for in-flight webhook processing before it returns", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "cs-webhook-stop-"));
+  const store = new CsEventStore(join(directory, "events.json"));
+  await store.load();
+  await store.accept({
+    id: "pending-before-start",
+    type: "match.ready",
+    test: false,
+    sequence: 1,
+    match: {
+      id: "match-1",
+      slug: "match-1",
+      status: "loaded",
+      tournamentId: "3",
+      team1: { id: "team-one", name: "A", tag: "A", steamIds: [steamOne] },
+      team2: { id: "team-two", name: "B", tag: "B", steamIds: [steamTwo] }
+    }
+  });
+  let processingStarted!: () => void;
+  const started = new Promise<void>(resolve => { processingStarted = resolve; });
+  let releaseParticipants!: (participants: Map<string, RegisteredPerson>) => void;
+  const delayedParticipants = new Promise<Map<string, RegisteredPerson>>(resolve => { releaseParticipants = resolve; });
+  const runtime = new CsWebhookRuntime({
+    secret,
+    port: 0,
+    host: "127.0.0.1",
+    intervalMs: 60_000,
+    mat: {
+      getTournaments: async () => [{ id: 3, type: "single_elimination", status: "active", teamSize: 5 }]
+    } as unknown as MatClient,
+    registration: {
+      getParticipants: async () => new Map(),
+      getCsParticipants: async () => {
+        processingStarted();
+        return delayedParticipants;
+      }
+    },
+    store,
+    report: () => undefined
+  });
+
+  try {
+    await runtime.start();
+    await started;
+    let stopped = false;
+    const stopPromise = runtime.stop().then(() => { stopped = true; });
+    await new Promise(resolve => setTimeout(resolve, 25));
+    assert.equal(stopped, false, "stop should wait for accepted work to finish");
+    releaseParticipants(new Map([
+      [discordOne, { name: "One", firstName: "One", steamId: steamOne }],
+      [discordTwo, { name: "Two", firstName: "Two", steamId: steamTwo }]
+    ]));
+    await stopPromise;
+    assert.deepEqual(await store.getPending(), []);
+  } finally {
+    releaseParticipants(new Map());
+    await runtime.stop();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("webhook diagnostics report local health and only count a signed MAT test event", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "cs-webhook-diagnostics-"));
+  const store = new CsEventStore(join(directory, "events.json"));
+  const runtime = new CsWebhookRuntime({
+    secret,
+    port: 0,
+    host: "127.0.0.1",
+    intervalMs: 60_000,
+    registration: { getParticipants: async () => new Map() },
+    store,
+    report: () => undefined
+  });
+
+  try {
+    await runtime.start();
+    const address = runtime.address;
+    assert.ok(address);
+    const initial = await runtime.getDiagnostics();
+    assert.equal(initial.listening, true);
+    assert.equal(initial.healthCheckOk, true);
+    assert.equal(initial.lastTestEventAt, null);
+
+    const body = Buffer.from(JSON.stringify({ id: "mat-test-event", type: "match.ready", test: true }));
+    const timestamp = Math.floor(Date.now() / 1000);
+    const validDigest = createHmac("sha256", secret).update(`${timestamp}.`).update(body).digest("hex");
+    const invalid = await fetch(`http://127.0.0.1:${address.port}/webhooks/mat`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-at-signature": `t=${timestamp},v1=${"0".repeat(64)}` },
+      body
+    });
+    assert.equal(invalid.status, 401);
+    assert.equal((await runtime.getDiagnostics()).lastSignedRequestAt, null);
+
+    const valid = await fetch(`http://127.0.0.1:${address.port}/webhooks/mat`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-at-signature": `t=${timestamp},v1=${validDigest}` },
+      body
+    });
+    assert.equal(valid.status, 202);
+    const received = await runtime.getDiagnostics();
+    assert.equal(received.lastSignedRequestType, "match.ready");
+    assert.ok(received.lastSignedRequestAt);
+    assert.equal(received.lastTestEventAt, received.lastSignedRequestAt);
+    assert.deepEqual(await store.getPending(), []);
   } finally {
     await runtime.stop();
     await rm(directory, { recursive: true, force: true });

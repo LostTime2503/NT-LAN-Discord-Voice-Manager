@@ -21,7 +21,12 @@ export interface CsVoiceRoomRequest {
 export interface CsDiscordAdapter {
   ensureRoom(request: CsVoiceRoomRequest, existingChannelId?: string, previousRequest?: CsVoiceRoomRequest): Promise<string>;
   canRouteMemberFromLobby(memberId: string, lobbyChannelId: string): Promise<boolean>;
+  canRouteMemberFromCsVoice(memberId: string, lobbyChannelId: string): Promise<boolean>;
   moveMemberFromSources(memberId: string, channelId: string, allowedSourceChannelIds: string[]): Promise<boolean>;
+  moveMemberFromCsVoice(memberId: string, channelId: string, lobbyChannelId: string): Promise<boolean>;
+  deleteRoomWhenEmpty(channelId: string, delayMs: number, onDeleted: () => Promise<void>): Promise<void>;
+  cancelRoomDeletion(channelId: string): void;
+  cancelAllRoomDeletions(): void;
   setParticipantRole(memberId: string, shouldHaveRole: boolean): Promise<boolean>;
   revokeMemberFromRoom(channelId: string, memberId: string): Promise<void>;
 }
@@ -108,6 +113,9 @@ export class CsDiscordManager {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("CS voice-channel ownership state could not be loaded.");
     }
     this.loaded = true;
+    if (!this.globallyDryRun) {
+      for (const room of this.rooms.values()) await this.scheduleRoomDeletion(room.channelId);
+    }
   }
 
   async handleMatchEvent(
@@ -117,7 +125,7 @@ export class CsDiscordManager {
     dryRun: boolean
   ): Promise<CsDiscordSyncSummary> {
     this.assertLoaded();
-    void dryRun;
+    const effectiveDryRun = dryRun || this.globallyDryRun;
     if (event.type !== "match.ready") {
       if (scope === "wingman" && ["match.finished", "match.cancelled", "match.reset"].includes(event.type)) {
         for (const [key, assignment] of this.assignments) {
@@ -176,10 +184,20 @@ export class CsDiscordManager {
       });
     }
     await this.persist();
+    let updatedRooms = 0;
+    if (!effectiveDryRun) {
+      const assignedMembers = new Set(plan.rooms.flatMap(room => room.memberIds));
+      for (const memberId of assignedMembers) {
+        const routed = scope === "wingman"
+          ? await this.routeAssignedMemberFromCsVoice(memberId)
+          : await this.routeAssignedMemberFromLobby(memberId);
+        if (routed) updatedRooms += 1;
+      }
+    }
 
     return {
       plannedRooms: plan.rooms.length,
-      updatedRooms: 0,
+      updatedRooms,
       skippedTeams: plan.skippedTeamCount,
       unmatchedPlayers: plan.unmatchedParticipantCount,
       ambiguousSteamIds: plan.ambiguousSteamIdCount
@@ -222,10 +240,17 @@ export class CsDiscordManager {
       }
     }
     await this.persist();
+    let updatedRooms = 0;
+    if (!dryRun && !this.globallyDryRun) {
+      const assignedMembers = new Set(plan.rooms.flatMap(room => room.memberIds));
+      for (const memberId of assignedMembers) {
+        if (await this.routeAssignedMemberFromLobby(memberId)) updatedRooms += 1;
+      }
+    }
 
     return {
       plannedRooms: plan.rooms.length,
-      updatedRooms: 0,
+      updatedRooms,
       skippedTeams: plan.skippedTeamCount,
       unmatchedPlayers: plan.unmatchedParticipantCount,
       ambiguousSteamIds: plan.ambiguousSteamIdCount
@@ -267,14 +292,62 @@ export class CsDiscordManager {
     return { plannedRooms: 0, updatedRooms: 0, skippedTeams: 0, unmatchedPlayers: 0, ambiguousSteamIds: 0 };
   }
 
-  async handleVoiceStateUpdate(state: VoiceState): Promise<boolean> {
+  async handleVoiceStateUpdate(state: VoiceState, previousChannelId?: string): Promise<boolean> {
     this.assertLoaded();
-    if (this.globallyDryRun) return false;
-    if (state.channelId !== this.lobbyChannelId || !state.id || state.member?.user.bot) return false;
-    if (!await this.adapter.canRouteMemberFromLobby(state.id, this.lobbyChannelId)) return false;
+    if (this.globallyDryRun || !state.id || state.member?.user.bot) return false;
+    if (previousChannelId && previousChannelId !== state.channelId
+      && [...this.rooms.values()].some(room => room.channelId === previousChannelId)) {
+      await this.scheduleRoomDeletion(previousChannelId);
+    }
+    if (state.channelId && [...this.rooms.values()].some(room => room.channelId === state.channelId)) {
+      this.adapter.cancelRoomDeletion(state.channelId);
+    }
+    if (state.channelId !== this.lobbyChannelId) return false;
+    return this.routeAssignedMemberFromLobby(state.id);
+  }
+
+  cancelPendingRoomDeletions(): void {
+    this.adapter.cancelAllRoomDeletions();
+  }
+
+  private scheduleRoomDeletion(channelId: string): Promise<void> {
+    return this.adapter.deleteRoomWhenEmpty(channelId, this.deleteDelayMs, async () => {
+      let removed = false;
+      for (const [key, room] of this.rooms) {
+        if (room.channelId === channelId) {
+          this.rooms.delete(key);
+          removed = true;
+        }
+      }
+      if (removed) await this.persist();
+    });
+  }
+
+  private async routeAssignedMemberFromLobby(memberId: string): Promise<boolean> {
+    return this.routeAssignedMember(
+      memberId,
+      () => this.adapter.canRouteMemberFromLobby(memberId, this.lobbyChannelId),
+      channelId => this.adapter.moveMemberFromSources(memberId, channelId, [this.lobbyChannelId])
+    );
+  }
+
+  private async routeAssignedMemberFromCsVoice(memberId: string): Promise<boolean> {
+    return this.routeAssignedMember(
+      memberId,
+      () => this.adapter.canRouteMemberFromCsVoice(memberId, this.lobbyChannelId),
+      channelId => this.adapter.moveMemberFromCsVoice(memberId, channelId, this.lobbyChannelId)
+    );
+  }
+
+  private async routeAssignedMember(
+    memberId: string,
+    canRoute: () => Promise<boolean>,
+    moveMember: (channelId: string) => Promise<boolean>
+  ): Promise<boolean> {
+    if (this.globallyDryRun || !await canRoute()) return false;
     const candidates = new Map<string, CsVoiceRoomRequest>();
     for (const [key, assignment] of this.assignments) {
-      if (assignment.memberIds.includes(state.id)) candidates.set(key, assignment);
+      if (assignment.memberIds.includes(memberId)) candidates.set(key, assignment);
     }
     if (candidates.size !== 1) return false;
     const request = candidates.values().next().value as CsVoiceRoomRequest | undefined;
@@ -286,7 +359,7 @@ export class CsDiscordManager {
     const channelId = ensured.channelId;
     this.rooms.set(request.key, { ...request, channelId });
     await this.persist();
-    return this.adapter.moveMemberFromSources(state.id, channelId, [this.lobbyChannelId]);
+    return moveMember(channelId);
   }
 
   async getRooms(): Promise<OwnedCsRoom[]> {
@@ -315,10 +388,7 @@ export class CsDiscordManager {
     };
     const effectiveDryRun = dryRun || this.globallyDryRun;
     for (const [discordId, participant] of participants) {
-      if (participant.manualCsLink) {
-        summary.manualLinks += 1;
-        continue;
-      }
+      if (participant.manualCsLink) summary.manualLinks += 1;
       if (!Array.isArray(participant.tournaments)) {
         summary.preservedMissingData += 1;
         continue;

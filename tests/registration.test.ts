@@ -60,15 +60,24 @@ test("API failures are not interpreted as an empty member list", async () => {
 test("command definitions load without initializing incomplete access configuration", () => {
   const script = `
     const { commands } = await import('./src/commands/index.ts');
+    const { default: assert } = await import('node:assert/strict');
     const definitions = commands.map(command => command.data.toJSON());
     if (!definitions.some(command => command.name === 'setup-access')) throw new Error('Missing setup-access');
     if (!definitions.some(command => command.name === 'voice-name')) throw new Error('Missing voice-name');
-    for (const name of ['giveaccess', 'clearaccessoverride', 'cs-link', 'cs-unlink', 'cs-status']) {
+    for (const name of ['giveaccess', 'clearaccessoverride', 'cs-link', 'cs-unlink', 'cs-status', 'cs-webhook-check', 'make-cs-team-rooms', 'cs-notifications', 'meal-notifications', 'manual-overrides', 'crew-help', 'set-up-crew-help']) {
       if (!definitions.some(command => command.name === name)) throw new Error('Missing ' + name);
     }
+    const fixedRooms = definitions.find(command => command.name === 'make-cs-team-rooms');
+    const competitionChoices = fixedRooms.options.find(option => option.name === 'konkurranse').choices.map(choice => choice.value);
+    assert.deepEqual(competitionChoices, ['main', 'wingman']);
+    const notifications = definitions.find(command => command.name === 'cs-notifications');
+    assert.deepEqual(notifications.options, []);
+    const mealNotifications = definitions.find(command => command.name === 'meal-notifications');
+    assert.deepEqual(mealNotifications.options, []);
+    const csUnlink = definitions.find(command => command.name === 'cs-unlink');
+    assert.equal(csUnlink.options.some(option => option.name === 'behold_rolle' && option.required === false), true);
     const giveAccessPerson = definitions.find(command => command.name === 'giveaccess').options.find(option => option.name === 'person');
     if (giveAccessPerson.type !== 3 || giveAccessPerson.autocomplete !== true) throw new Error('giveaccess person must use member autocomplete');
-    const { default: assert } = await import('node:assert/strict');
     assert.equal(definitions.find(command => command.name === 'setup-access').options.some(option => option.name === 'beskytt_kanaler'), false);
     const runtime = await import('./src/accessRuntime.ts');
     assert.equal(runtime.accessManager, undefined);
@@ -93,7 +102,7 @@ test("command definitions load without initializing incomplete access configurat
         REGISTRATION_CLIENT_SECRET: completeApi ? "test" : ""
       }
     });
-    assert.equal(result.status, 0, "Incomplete access settings must not crash imports or allow unguarded voice creation.");
+    assert.equal(result.status, 0, `Incomplete access settings must not crash imports or allow unguarded voice creation.\n${result.stderr}\n${result.stdout}`);
   }
 });
 
@@ -155,7 +164,7 @@ test("CS participants include Discord-linked children without changing access pa
     [guardianId]: {
       name: "Guardian Person", firstName: "Guardian", steamId: "76561198000000001", tournaments: ["cs2"],
       children: [
-        { id: "child-linked", discordId: childDiscordId, name: "Child Person", firstName: "Child", steamId: "76561198000000002", tournaments: ["cs2-wingman"] },
+        { id: "child-linked", discordId: childDiscordId, name: "Child Person", firstName: "Child", steamId: "76561198000000002", tournaments: ["cs2-wingman"], meals: [{ day: "saturday", round: "Pulje 2", time: "18:00" }] },
         { id: "child-unlinked", discordId: "", name: "Unlinked Child", firstName: "Unlinked", steamId: "76561198000000003" }
       ]
     }
@@ -165,7 +174,8 @@ test("CS participants include Discord-linked children without changing access pa
   const csParticipants = parseCsParticipants(payloadWithChildren);
   assert.equal(csParticipants.size, 2);
   assert.deepEqual(csParticipants.get(childDiscordId), {
-    name: "Child Person", firstName: "Child", steamId: "76561198000000002", tournaments: ["cs2-wingman"]
+    name: "Child Person", firstName: "Child", steamId: "76561198000000002", tournaments: ["cs2-wingman"],
+    meals: [{ day: "saturday", round: "Pulje 2", time: "18:00" }]
   });
   assert.deepEqual(csParticipants.get(guardianId)?.tournaments, ["cs2"]);
 });
@@ -207,4 +217,18 @@ test("registration client shares its response cache while exposing separate acce
   assert.equal(csParticipants.size, 2);
   assert.equal(csParticipants.get(childDiscordId)?.steamId, "76561198000000002");
   assert.equal(apiCalls, 1);
+});
+
+test("meal fields preserve valid Saturday meal groups and fail closed on invalid lists", () => {
+  const valid = { data: { participants: {
+    [discordId]: { name: "Test Person", firstName: "Test", meals: [{ day: "saturday", round: "Pulje 1", time: "18:00" }] }
+  } } };
+  const empty = { data: { participants: { [discordId]: { name: "Test Person", firstName: "Test", meals: [] } } } };
+  const invalid = { data: { participants: {
+    [discordId]: { name: "Test Person", firstName: "Test", meals: [{ day: "saturday", round: "Pulje 3", time: "18:00" }] }
+  } } };
+  assert.deepEqual(parseParticipants(valid).get(discordId)?.meals, [{ day: "saturday", round: "Pulje 1", time: "18:00" }]);
+  assert.deepEqual(parseParticipants(empty).get(discordId)?.meals, []);
+  assert.equal(parseParticipants(invalid).get(discordId)?.meals, undefined);
+  assert.equal(parseParticipants(payload).get(discordId)?.meals, undefined);
 });

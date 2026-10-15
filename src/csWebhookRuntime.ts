@@ -32,6 +32,14 @@ export interface CsWebhookRuntimeOptions {
   report?: (summary: CsWebhookDryRunReport) => void;
 }
 
+export interface CsWebhookRuntimeDiagnostics {
+  listening: boolean;
+  healthCheckOk: boolean;
+  lastSignedRequestAt: number | null;
+  lastSignedRequestType: string | null;
+  lastTestEventAt: number | null;
+}
+
 const terminalMatchStatuses = new Set(["completed", "cancelled", "canceled", "bye", "reset"]);
 const activeWingmanStatuses = new Set(["ready", "loaded", "live", "in_progress", "playing"]);
 const waitingWingmanStatuses = new Set(["pending", "waiting", "scheduled"]);
@@ -73,10 +81,13 @@ export class CsWebhookRuntime {
   private readonly report: (summary: CsWebhookDryRunReport) => void;
   private receiver: ReturnType<typeof createMatWebhookReceiver> | undefined;
   private retryTimer: NodeJS.Timeout | undefined;
-  private processing = false;
+  private processing: Promise<void> | undefined;
   private readonly tournamentScopes = new Map<string, "main" | "wingman">();
   private activeMainTournamentId: number | undefined;
   private activeWingmanTournamentId: number | undefined;
+  private lastSignedRequestAt: number | null = null;
+  private lastSignedRequestType: string | null = null;
+  private lastTestEventAt: number | null = null;
 
   constructor(private readonly options: CsWebhookRuntimeOptions) {
     this.store = options.store ?? new CsEventStore();
@@ -86,6 +97,29 @@ export class CsWebhookRuntime {
   get address(): AddressInfo | null {
     const address = this.receiver?.address();
     return address && typeof address === "object" ? address : null;
+  }
+
+  async getDiagnostics(): Promise<CsWebhookRuntimeDiagnostics> {
+    const address = this.address;
+    let healthCheckOk = false;
+    if (address) {
+      try {
+        const response = await fetch(`http://127.0.0.1:${address.port}/healthz`, {
+          signal: AbortSignal.timeout(1_500),
+          redirect: "error"
+        });
+        healthCheckOk = response.status === 204;
+      } catch {
+        healthCheckOk = false;
+      }
+    }
+    return {
+      listening: address !== null,
+      healthCheckOk,
+      lastSignedRequestAt: this.lastSignedRequestAt,
+      lastSignedRequestType: this.lastSignedRequestType,
+      lastTestEventAt: this.lastTestEventAt
+    };
   }
 
   async start(): Promise<void> {
@@ -145,8 +179,13 @@ export class CsWebhookRuntime {
     }
     const receiver = createMatWebhookReceiver({
       secret: this.options.secret,
+      onVerifiedRequest: request => {
+        const receivedAt = Date.now();
+        this.lastSignedRequestAt = receivedAt;
+        this.lastSignedRequestType = request.type;
+        if (request.test) this.lastTestEventAt = receivedAt;
+      },
       onEvent: async event => {
-        if (!await this.tournamentFor(event)) return;
         const result = await this.store.accept(event);
         if (result === "accepted") void this.processPending();
       }
@@ -172,11 +211,21 @@ export class CsWebhookRuntime {
     if (receiver?.listening) {
       await new Promise<void>((resolve, reject) => receiver.close(error => error ? reject(error) : resolve()));
     }
+    await this.processing;
   }
 
-  private async processPending(): Promise<void> {
+  private processPending(): void {
     if (this.processing || !this.receiver) return;
-    this.processing = true;
+    const processing = this.drainPending();
+    this.processing = processing;
+    void processing.then(() => {
+      if (this.processing === processing) this.processing = undefined;
+    }, () => {
+      if (this.processing === processing) this.processing = undefined;
+    });
+  }
+
+  private async drainPending(): Promise<void> {
     try {
       for (const event of await this.store.getPending()) {
         const tournament = await this.tournamentFor(event);
@@ -194,8 +243,6 @@ export class CsWebhookRuntime {
       }
     } catch {
       console.error("CS webhook event queue could not be processed.");
-    } finally {
-      this.processing = false;
     }
   }
 
