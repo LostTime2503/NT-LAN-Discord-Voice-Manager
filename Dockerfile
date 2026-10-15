@@ -14,6 +14,8 @@ RUN npm run build
 FROM node:20-alpine AS runtime
 
 ENV NODE_ENV=production
+LABEL org.opencontainers.image.title="NT-LAN Discord Voice Manager" \
+	org.opencontainers.image.source="https://github.com/LostTime2503/NT-LAN-Discord-Voice-Manager"
 WORKDIR /app
 
 COPY package.json package-lock.json ./
