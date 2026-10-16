@@ -157,6 +157,7 @@ test("signed match.ready is persisted then produces aggregate dry-run plan only"
       eventType: "match.ready",
       tournament: "main",
       plannedRooms: 2,
+      plannedMembers: 2,
       updatedRooms: 0,
       skippedTeams: 0,
       unmatchedPlayers: 0,

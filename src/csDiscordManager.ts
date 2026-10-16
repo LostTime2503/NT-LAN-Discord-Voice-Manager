@@ -45,6 +45,7 @@ interface PersistedCsRoomState {
 
 export interface CsDiscordSyncSummary {
   plannedRooms: number;
+  plannedMembers?: number;
   updatedRooms: number;
   skippedTeams: number;
   unmatchedPlayers: number;
@@ -155,6 +156,7 @@ export class CsDiscordManager {
     if (!completeWingmanPairing) {
       return {
         plannedRooms: plan.rooms.length,
+        plannedMembers: 0,
         updatedRooms: 0,
         skippedTeams: Math.max(plan.skippedTeamCount, 2 - plan.rooms.length),
         unmatchedPlayers: plan.unmatchedParticipantCount,
@@ -197,6 +199,7 @@ export class CsDiscordManager {
 
     return {
       plannedRooms: plan.rooms.length,
+      plannedMembers: new Set(plan.rooms.flatMap(room => room.memberIds)).size,
       updatedRooms,
       skippedTeams: plan.skippedTeamCount,
       unmatchedPlayers: plan.unmatchedParticipantCount,

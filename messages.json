@@ -373,7 +373,7 @@
     "access.summary": "Nettsidetilgangssynk ({mode}): {counts}.",
     "cs.roleSummary": "CS-rolletildeling ({mode}): {enrolled} påmeldte, {added} lagt til, {removed} fjernet, {missing} uten påmeldingsdata.",
     "meal.rolesSummary": "Måltidsroller synkronisert: {pulje1} i Pulje 1, {pulje2} i Pulje 2, {added} lagt til, {removed} fjernet, {missing} uten måltidsdata.",
-    "cs.webhookSummary": "CS webhook {tournament} {eventType}: {planned} rom i plan, {updated} oppdatert, {skipped} lag utelatt.",
+    "cs.webhookSummary": "CS webhook {tournament} {eventType}: {planned} rom, {members} spillere i plan, {updated} flyttet, {skipped} lag utelatt, {unmatched} uten Steam-kobling, {ambiguous} tvetydige SteamID-er.",
     "cs.recoverySummary": "CS recovery-forhåndsvisning: {main} main-rom, {wingman} Wingman-rom, {unmatched} uten kobling.",
     "voice.channelCreated": "Vanlig midlertidig voice-kanal opprettet og eier flyttet inn.",
     "voice.channelDeleted": "Tom vanlig midlertidig voice-kanal slettet."

@@ -13,6 +13,7 @@ export interface CsWebhookDryRunReport {
   eventType: string;
   tournament: "main" | "wingman";
   plannedRooms: number;
+  plannedMembers: number;
   updatedRooms?: number;
   skippedTeams: number;
   unmatchedPlayers: number;
@@ -315,6 +316,7 @@ export class CsWebhookRuntime {
         eventType: event.type,
         tournament,
         plannedRooms: summary.plannedRooms,
+        plannedMembers: summary.plannedMembers ?? 0,
         updatedRooms: summary.updatedRooms,
         skippedTeams: summary.skippedTeams,
         unmatchedPlayers: summary.unmatchedPlayers,
@@ -323,7 +325,7 @@ export class CsWebhookRuntime {
       return;
     }
     if (event.type !== "match.ready") {
-      this.report({ eventType: event.type, tournament, plannedRooms: 0, updatedRooms: 0, skippedTeams: 0, unmatchedPlayers: 0, ambiguousSteamIds: 0 });
+      this.report({ eventType: event.type, tournament, plannedRooms: 0, plannedMembers: 0, updatedRooms: 0, skippedTeams: 0, unmatchedPlayers: 0, ambiguousSteamIds: 0 });
       return;
     }
     const participants = await this.getCsParticipants();
@@ -340,6 +342,7 @@ export class CsWebhookRuntime {
       eventType: event.type,
       tournament,
       plannedRooms: plan.rooms.length,
+      plannedMembers: new Set(plan.rooms.flatMap(room => room.memberIds)).size,
       updatedRooms: 0,
       skippedTeams: plan.skippedTeamCount,
       unmatchedPlayers: plan.unmatchedParticipantCount,

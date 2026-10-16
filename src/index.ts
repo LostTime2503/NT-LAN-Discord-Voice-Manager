@@ -511,8 +511,11 @@ async function startCsVoiceSync(enabled = config.csVoiceSyncEnabled, live = !con
             tournament: summary.tournament,
             eventType: summary.eventType,
             planned: summary.plannedRooms,
+            members: summary.plannedMembers,
             updated: summary.updatedRooms ?? 0,
-            skipped: summary.skippedTeams
+            skipped: summary.skippedTeams,
+            unmatched: summary.unmatchedPlayers,
+            ambiguous: summary.ambiguousSteamIds
           }, "logs"));
         }
       });

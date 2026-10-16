@@ -249,7 +249,7 @@ Inngangsmeldingen har nettsidelenke og **Sjekk tilgang**-knapp. Knappen gir et p
 
 `/cs-webhook-check` viser om den lokale MAT-mottakeren svarer, og når den sist mottok et signert testevent. Klikk først **Send test event** i MAT, vent litt og kjør kommandoen; den leser ikke payloaden og utfører ingen Discord-endringer.
 
-`/cs-webhook-logs` viser de siste botskrevne CS-webhook-oppsummeringene fra `CREW_LOG_CHANNEL_ID` privat for Crew. Boten trenger `View Channel` og `Read Message History` i kanalen; kommandoen søker bakover gjennom opptil 1 000 meldinger og filtrerer på CS-webhook-oppsummeringer.
+`/cs-webhook-logs` viser de siste botskrevne CS-webhook-oppsummeringene fra `CREW_LOG_CHANNEL_ID` privat for Crew. De viser planlagte rom og unike spillere i planen, faktisk flytting, utelatte lag, manglende Steam-koblinger og tvetydige SteamID-er, uten spillernavn eller ID-er. Boten trenger `View Channel` og `Read Message History` i kanalen; kommandoen søker bakover gjennom opptil 1 000 meldinger og filtrerer på CS-webhook-oppsummeringer.
 
 `/set-up-crew-help` publiserer eller oppdaterer en Crew-guide med botens funksjoner, hvordan `/bot-settings` styrer dem, og hvor man finner kommandohjelp. Standardkanalen er `CREW_LOG_CHANNEL_ID`; du kan velge en annen tekstkanal med `kanal`. Boten trenger `Send Messages`, `Embed Links` og `Read Message History` der. Rediger `commands.crewHelp.announcement` i `messages.json` som én array-linje per tekstlinje. Etter tekstendring: kjør `/reload-messages`, deretter `/set-up-crew-help` for å oppdatere innlegget. Kjør `/crew-help` for den separate private kommandooversikten.
 
