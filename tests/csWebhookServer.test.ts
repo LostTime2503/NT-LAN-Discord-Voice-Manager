@@ -181,3 +181,42 @@ test("match.live, match.map_started, and match.score_updated are passed to room-
   });
   assert.deepEqual(received.map(event => event.type), ["match.live", "match.map_started", "match.score_updated"]);
 });
+
+test("matchmaking score update accepts null tournament and team IDs with a complete roster", async () => {
+  const received: MatWebhookEvent[] = [];
+  const payload = {
+    ...fixture,
+    id: "matchmaking-score-update",
+    type: "match.score_updated",
+    data: {
+      ...fixture.data,
+      match: {
+        ...fixture.data.match,
+        id: 33,
+        slug: "mm-a0a5be6a",
+        status: "live",
+        tournament: null,
+        team1: { id: null, name: "Private team one", tag: null, players: [
+          { steam_id64: "76561197974884982", name: "private one" },
+          { steam_id64: "76561198619914793", name: "private two" }
+        ] },
+        team2: { id: null, name: "Private team two", tag: null, players: [
+          { steam_id64: "76561199063729197", name: "private three" },
+          { steam_id64: "76561199833759651", name: "private four" }
+        ] },
+        connect: null
+      }
+    }
+  };
+  await withReceiver(event => { received.push(event); }, async url => {
+    const body = Buffer.from(JSON.stringify(payload));
+    const response = await fetch(`${url}/webhooks/mat`, { method: "POST", headers: signedHeaders(body), body });
+    assert.equal(response.status, 202);
+  });
+  assert.equal(received.length, 1);
+  assert.equal(received[0]?.match.tournamentId, "");
+  assert.match(received[0]?.match.team1?.id ?? "", /^roster-[a-f0-9]{12}$/);
+  assert.match(received[0]?.match.team2?.id ?? "", /^roster-[a-f0-9]{12}$/);
+  assert.deepEqual(received[0]?.match.team1?.steamIds, ["76561197974884982", "76561198619914793"]);
+  assert.equal(JSON.stringify(received).includes("private one"), false);
+});

@@ -373,12 +373,13 @@ test("unknown MAT tournament IDs classify complete 5v5 and 2v2 room-start roster
       eventType: string;
       id: string;
       matchId: number;
-      tournamentId: number;
+      tournamentId?: number;
       sequence: number;
       teamSize: number;
+      nullTeamIds?: boolean;
     }) => {
       const makeTeam = (number: 1 | 2) => ({
-        id: `team-${input.matchId}-${number}`,
+        id: input.nullTeamIds ? null : `team-${input.matchId}-${number}`,
         name: `private-team-${number}`,
         tag: `T${number}`,
         players: steamIds.slice((number - 1) * input.teamSize, number * input.teamSize)
@@ -395,7 +396,7 @@ test("unknown MAT tournament IDs classify complete 5v5 and 2v2 room-start roster
             slug: `fallback-${input.matchId}`,
             status: input.eventType === "match.live" ? "live" : "loaded",
             game: "cs2",
-            tournament: { id: input.tournamentId },
+            tournament: input.tournamentId === undefined ? null : { id: input.tournamentId },
             team1: makeTeam(1),
             team2: makeTeam(2)
           }
@@ -415,17 +416,17 @@ test("unknown MAT tournament IDs classify complete 5v5 and 2v2 room-start roster
       assert.deepEqual(await store.getPending(), []);
     };
 
-    await sendEvent({ eventType: "match.score_updated", id: "main-score", matchId: 42, tournamentId: 7, sequence: 1, teamSize: 5 });
-    await sendEvent({ eventType: "match.map_started", id: "main-map", matchId: 42, tournamentId: 7, sequence: 2, teamSize: 5 });
-    await sendEvent({ eventType: "match.map_started", id: "wingman-map", matchId: 43, tournamentId: 8, sequence: 1, teamSize: 2 });
+    await sendEvent({ eventType: "match.score_updated", id: "main-score", matchId: 42, sequence: 1, teamSize: 5, nullTeamIds: true });
+    await sendEvent({ eventType: "match.map_started", id: "main-map", matchId: 42, sequence: 2, teamSize: 5, nullTeamIds: true });
+    await sendEvent({ eventType: "match.score_updated", id: "wingman-score", matchId: 43, sequence: 1, teamSize: 2, nullTeamIds: true });
 
     assert.deepEqual(fallbacks, [
       { eventType: "match.score_updated", tournament: "main" },
-      { eventType: "match.map_started", tournament: "wingman" }
+      { eventType: "match.score_updated", tournament: "wingman" }
     ]);
     assert.deepEqual(reports.map(report => [report.eventType, report.tournament, report.plannedRooms, report.plannedMembers]), [
       ["match.score_updated", "main", 2, 10],
-      ["match.map_started", "wingman", 2, 4]
+      ["match.score_updated", "wingman", 2, 4]
     ]);
   } finally {
     await runtime.stop();

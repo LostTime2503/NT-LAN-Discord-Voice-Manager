@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
 const steamId64Pattern = /^7656119\d{10}$/;
@@ -72,17 +72,20 @@ function stringId(value: unknown): string | null {
   return null;
 }
 
-function parseTeam(value: unknown): MatWebhookTeam | null {
+function parseTeam(value: unknown, allowMissingId: boolean): MatWebhookTeam | null {
   if (value === undefined || value === null) return null;
   if (!isRecord(value)) throw new Error("invalid_team");
-  const id = stringId(value.id);
-  if (!id || !Array.isArray(value.players)) throw new Error("invalid_team");
+  if (!Array.isArray(value.players)) throw new Error("invalid_team");
   const steamIds = value.players.map(player => {
     if (!isRecord(player) || typeof player.steam_id64 !== "string" || !steamId64Pattern.test(player.steam_id64)) {
       throw new Error("invalid_team_player");
     }
     return player.steam_id64;
   });
+  const id = stringId(value.id) ?? (allowMissingId
+    ? `roster-${createHash("sha256").update([...steamIds].sort().join(":")).digest("hex").slice(0, 12)}`
+    : null);
+  if (!id) throw new Error("invalid_team");
   return {
     id,
     name: typeof value.name === "string" ? value.name : null,
@@ -102,10 +105,11 @@ export function parseMatWebhookEvent(value: unknown): MatWebhookEvent | null {
 
   const match = value.data.match;
   const isTerminalEvent = terminalEventTypes.has(value.type);
+  const isRoomAssignmentEvent = isCsRoomAssignmentEvent(value.type);
   const matchId = stringId(match.id);
   const tournament = isRecord(match.tournament) ? stringId(match.tournament.id) : null;
   if (!matchId || typeof match.slug !== "string" || !match.slug || typeof match.status !== "string"
-    || (!tournament && !isTerminalEvent)) {
+    || (!tournament && !isTerminalEvent && !isRoomAssignmentEvent)) {
     throw new Error("invalid_match");
   }
   if (match.game !== undefined && match.game !== "cs2") throw new Error("unsupported_game");
@@ -120,8 +124,8 @@ export function parseMatWebhookEvent(value: unknown): MatWebhookEvent | null {
       slug: match.slug,
       status: match.status,
       tournamentId: tournament ?? "",
-      team1: isTerminalEvent ? null : parseTeam(match.team1),
-      team2: isTerminalEvent ? null : parseTeam(match.team2)
+      team1: isTerminalEvent ? null : parseTeam(match.team1, isRoomAssignmentEvent),
+      team2: isTerminalEvent ? null : parseTeam(match.team2, isRoomAssignmentEvent)
     }
   };
 }
