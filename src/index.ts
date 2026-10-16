@@ -9,6 +9,7 @@ import { MatClient } from "./matClient.js";
 import { RegistrationClient } from "./registrationClient.js";
 import { CsSyncRuntime } from "./csSyncRuntime.js";
 import { CsWebhookRuntime } from "./csWebhookRuntime.js";
+import { isCsRoomAssignmentEvent } from "./csWebhookServer.js";
 import { CsDiscordManager } from "./csDiscordManager.js";
 import { DiscordJsCsVoiceAdapter } from "./discordCsVoiceAdapter.js";
 import { manualOverrideStore } from "./manualOverrides.js";
@@ -516,6 +517,7 @@ async function startCsVoiceSync(enabled = config.csVoiceSyncEnabled, live = !con
           void sendCrewLogMessage(client, getBotText("cs.webhookTestReceived", { eventType }, "logs"));
         },
         onEventReceived: eventType => {
+          if (isCsRoomAssignmentEvent(eventType)) return;
           console.log("CS webhook event queued", { eventType });
           void sendCrewLogMessage(client, getBotText("cs.webhookReceived", { eventType }, "logs"));
         },

@@ -88,6 +88,7 @@ export class CsWebhookRuntime {
   private retryTimer: NodeJS.Timeout | undefined;
   private processing: Promise<void> | undefined;
   private processRequestedWhileRunning = false;
+  private readonly assignedRoomMatches = new Set<string>();
   private readonly tournamentScopes = new Map<string, "main" | "wingman">();
   private activeMainTournamentId: number | undefined;
   private activeWingmanTournamentId: number | undefined;
@@ -281,9 +282,17 @@ export class CsWebhookRuntime {
           await this.store.markProcessed(event.id);
           continue;
         }
-        try {
-          await this.processEvent(event, tournament);
+        const roomAssignmentKey = isCsRoomAssignmentEvent(event.type)
+          ? `${event.match.tournamentId}:${event.match.id}`
+          : null;
+        if (roomAssignmentKey && this.assignedRoomMatches.has(roomAssignmentKey)) {
           await this.store.markProcessed(event.id);
+          continue;
+        }
+        try {
+          const assignmentEstablished = await this.processEvent(event, tournament);
+          await this.store.markProcessed(event.id);
+          if (roomAssignmentKey && assignmentEstablished) this.assignedRoomMatches.add(roomAssignmentKey);
         } catch {
           console.error("CS webhook dry-run processing failed; event remains queued.");
           return;
@@ -333,7 +342,7 @@ export class CsWebhookRuntime {
       : this.options.registration.getParticipants();
   }
 
-  private async processEvent(event: MatWebhookEvent, tournament: "main" | "wingman"): Promise<void> {
+  private async processEvent(event: MatWebhookEvent, tournament: "main" | "wingman"): Promise<boolean> {
     if (this.options.discordManager) {
       const participants = isCsRoomAssignmentEvent(event.type)
         ? await this.getCsParticipants()
@@ -354,11 +363,11 @@ export class CsWebhookRuntime {
         unmatchedPlayers: summary.unmatchedPlayers,
         ambiguousSteamIds: summary.ambiguousSteamIds
       });
-      return;
+      return isCsRoomAssignmentEvent(event.type) && (summary.plannedMembers ?? 0) > 0 && summary.skippedTeams === 0;
     }
     if (!isCsRoomAssignmentEvent(event.type)) {
       this.report({ eventType: event.type, tournament, plannedRooms: 0, plannedMembers: 0, updatedRooms: 0, skippedTeams: 0, unmatchedPlayers: 0, ambiguousSteamIds: 0 });
-      return;
+      return false;
     }
     const participants = await this.getCsParticipants();
     const teams: MatTeam[] = [event.match.team1, event.match.team2]
@@ -380,5 +389,6 @@ export class CsWebhookRuntime {
       unmatchedPlayers: plan.unmatchedParticipantCount,
       ambiguousSteamIds: plan.ambiguousSteamIdCount
     });
+    return plan.rooms.length > 0 && plan.skippedTeamCount === 0;
   }
 }

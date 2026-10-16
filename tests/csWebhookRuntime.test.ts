@@ -97,7 +97,8 @@ test("signed room-start events produce aggregate dry-run plans", async () => {
     [discordOne, { name: "private player one", firstName: "Player", steamId: steamOne }],
     [discordTwo, { name: "private player two", firstName: "Player", steamId: steamTwo }]
   ]);
-  let resolveReport!: (report: CsWebhookDryRunReport) => void;
+  const reports: CsWebhookDryRunReport[] = [];
+  let participantFetches = 0;
   const runtime = new CsWebhookRuntime({
     secret,
     port: 0,
@@ -111,27 +112,29 @@ test("signed room-start events produce aggregate dry-run plans", async () => {
     } as unknown as MatClient,
     registration: {
       getParticipants: async () => new Map(),
-      getCsParticipants: async () => participants
+      getCsParticipants: async () => {
+        participantFetches += 1;
+        return participants;
+      }
     },
     store,
-    report: summary => resolveReport(summary)
+    report: summary => reports.push(summary)
   });
 
   try {
     await runtime.start();
     const address = runtime.address;
     assert.ok(address);
-    for (const [index, eventType] of ["match.ready", "match.live", "match.map_started"].entries()) {
-      const reportPromise = new Promise<CsWebhookDryRunReport>(resolve => { resolveReport = resolve; });
+    const sendEvent = async (eventType: string, sequence: number, matchId: number, slug: string) => {
       const body = Buffer.from(JSON.stringify({
-        id: `runtime-${eventType}`,
+        id: `runtime-${eventType}-${matchId}`,
         type: eventType,
         test: false,
         data: {
-          sequence: index + 1,
+          sequence,
           match: {
-            id: 12,
-            slug: "fixture-match",
+            id: matchId,
+            slug,
             status: "loaded",
             game: "cs2",
             tournament: { id: 3 },
@@ -149,22 +152,18 @@ test("signed room-start events produce aggregate dry-run plans", async () => {
         body
       });
       assert.equal(response.status, 202);
-      const report = await Promise.race([
-        reportPromise,
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`${eventType} was not reported`)), 2_000))
-      ]);
-      assert.deepEqual(report, {
-        eventType,
-        tournament: "main",
-        plannedRooms: 2,
-        plannedMembers: 2,
-        updatedRooms: 0,
-        skippedTeams: 0,
-        unmatchedPlayers: 0,
-        ambiguousSteamIds: 0
-      });
-    }
-    assert.deepEqual(await store.getPending(), []);
+      for (let attempt = 0; attempt < 400 && (await store.getPending()).length; attempt += 1) {
+        await new Promise(resolve => setTimeout(resolve, 5));
+      }
+      assert.deepEqual(await store.getPending(), [], `${eventType} was not processed`);
+    };
+    await sendEvent("match.ready", 1, 12, "fixture-match");
+    await sendEvent("match.live", 2, 12, "fixture-match");
+    await sendEvent("match.map_started", 3, 12, "fixture-match");
+    await sendEvent("match.map_started", 1, 13, "map-started-only-match");
+    assert.deepEqual(reports.map(report => report.eventType), ["match.ready", "match.map_started"]);
+    assert.deepEqual(reports.map(report => [report.plannedRooms, report.plannedMembers]), [[2, 2], [2, 2]]);
+    assert.equal(participantFetches, 2);
   } finally {
     await runtime.stop();
     await rm(directory, { recursive: true, force: true });
