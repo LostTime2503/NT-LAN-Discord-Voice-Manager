@@ -33,6 +33,16 @@ function parseTournaments(value: unknown): string[] | undefined {
   return [...new Set(value as string[])];
 }
 
+function sameTournamentSelection(left: unknown, right: unknown): boolean {
+  const leftTournaments = parseTournaments(left);
+  const rightTournaments = parseTournaments(right);
+  if (!leftTournaments || !rightTournaments) return left === undefined && right === undefined;
+  const leftSorted = [...leftTournaments].sort();
+  const rightSorted = [...rightTournaments].sort();
+  return leftSorted.length === rightSorted.length
+    && leftSorted.every((tournament, index) => tournament === rightSorted[index]);
+}
+
 function parseMeals(value: unknown): RegisteredMeal[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const meals: RegisteredMeal[] = [];
@@ -79,6 +89,7 @@ export function parseCsParticipants(payload: unknown): Map<string, RegisteredPer
   const participants = parseParticipants(payload);
   if (!isRecord(payload) || !isRecord(payload.data) || !isRecord(payload.data.participants)) return participants;
   const duplicateDiscordIds = new Set<string>();
+  const ambiguousTopLevelIds = new Set<string>();
   const topLevelDiscordIds = new Set(participants.keys());
 
   for (const [discordId, person] of Object.entries(payload.data.participants)) {
@@ -98,9 +109,14 @@ export function parseCsParticipants(payload: unknown): Map<string, RegisteredPer
         || typeof child.name !== "string" || typeof child.firstName !== "string") continue;
       if (participants.has(child.discordId)) {
         if (topLevelDiscordIds.has(child.discordId)) {
-          const parent = participants.get(child.discordId)!;
-          const { steamId: _steamId, tournaments: _tournaments, meals: _meals, ...ambiguousIdentity } = parent;
-          participants.set(child.discordId, ambiguousIdentity);
+          const topLevelRecord = payload.data.participants[child.discordId];
+          const topLevelParticipant = participants.get(child.discordId)!;
+          const sameLinkedChild = isRecord(topLevelRecord) && topLevelRecord.child === true
+            && topLevelParticipant.name === child.name
+            && topLevelParticipant.firstName === child.firstName
+            && parseSteamId(topLevelRecord.steamId) === parseSteamId(child.steamId)
+            && sameTournamentSelection(topLevelRecord.tournaments, child.tournaments);
+          if (!sameLinkedChild) ambiguousTopLevelIds.add(child.discordId);
         } else {
           duplicateDiscordIds.add(child.discordId);
         }
@@ -124,6 +140,13 @@ export function parseCsParticipants(payload: unknown): Map<string, RegisteredPer
     if (person) {
       const { steamId: _steamId, tournaments: _tournaments, meals: _meals, ...ambiguousChild } = person;
       participants.set(discordId, ambiguousChild);
+    }
+  }
+  for (const discordId of ambiguousTopLevelIds) {
+    const person = participants.get(discordId);
+    if (person) {
+      const { steamId: _steamId, tournaments: _tournaments, meals: _meals, ...ambiguousIdentity } = person;
+      participants.set(discordId, ambiguousIdentity);
     }
   }
   return participants;

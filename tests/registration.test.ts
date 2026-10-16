@@ -195,6 +195,42 @@ test("duplicate child Discord IDs are retained without a Steam mapping", () => {
   assert.equal(parseCsParticipants(payloadWithDuplicateChild).get(childDiscordId)?.steamId, undefined);
 });
 
+test("identical top-level and nested child records retain an unambiguous CS identity", () => {
+  const guardianId = "123456789012345678";
+  const childDiscordId = "123456789012345679";
+  const child = {
+    name: "Ludvig Arnesen",
+    firstName: "Ludvig",
+    steamId: "76561199545530816",
+    tournaments: ["cs2", "cs2-wingman"]
+  };
+  const payloadWithMirroredChild = { data: { participants: {
+    [guardianId]: {
+      name: "Guardian Person", firstName: "Guardian",
+      children: [{ id: "child-id", discordId: childDiscordId, ...child }]
+    },
+    [childDiscordId]: { ...child, child: true }
+  } } };
+
+  assert.deepEqual(parseCsParticipants(payloadWithMirroredChild).get(childDiscordId), child);
+});
+
+test("conflicting top-level and nested child records still fail closed", () => {
+  const guardianId = "123456789012345678";
+  const childDiscordId = "123456789012345679";
+  const payloadWithConflictingChild = { data: { participants: {
+    [guardianId]: {
+      name: "Guardian Person", firstName: "Guardian",
+      children: [{ id: "child-id", discordId: childDiscordId, name: "Child Person", firstName: "Child", steamId: "76561199545530816", tournaments: ["cs2"] }]
+    },
+    [childDiscordId]: { name: "Different Person", firstName: "Different", steamId: "76561199545530816", tournaments: ["cs2"], child: true }
+  } } };
+
+  const participant = parseCsParticipants(payloadWithConflictingChild).get(childDiscordId);
+  assert.equal(participant?.steamId, undefined);
+  assert.equal(participant?.tournaments, undefined);
+});
+
 test("registration client shares its response cache while exposing separate access and CS views", async () => {
   let apiCalls = 0;
   const childDiscordId = "123456789012345679";
