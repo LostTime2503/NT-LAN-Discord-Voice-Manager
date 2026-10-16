@@ -75,6 +75,38 @@ test("valid webhook verifies raw-body signature and strips connect credentials a
   assert.equal(JSON.stringify(received).includes("private player"), false);
 });
 
+test("terminal webhook accepts null tournament and team IDs and strips terminal roster data", async () => {
+  const received: MatWebhookEvent[] = [];
+  const payload = {
+    id: "finished-event-without-tournament",
+    type: "match.finished",
+    test: false,
+    data: {
+      sequence: 10,
+      match: {
+        id: 28,
+        slug: "mm-cb98061b",
+        status: "completed",
+        game: "cs2",
+        tournament: null,
+        team1: { id: null, name: "private team", players: [{ steam_id64: "76561198000000001", name: "private" }] },
+        team2: { id: null, name: "private team", players: [{ steam_id64: "76561198000000002", name: "private" }] }
+      }
+    }
+  };
+  await withReceiver(event => { received.push(event); }, async url => {
+    const body = Buffer.from(JSON.stringify(payload));
+    const response = await fetch(`${url}/webhooks/mat`, { method: "POST", headers: signedHeaders(body), body });
+    assert.equal(response.status, 202);
+  });
+  assert.equal(received.length, 1);
+  assert.equal(received[0]?.match.tournamentId, "");
+  assert.equal(received[0]?.match.team1, null);
+  assert.equal(received[0]?.match.team2, null);
+  assert.equal(JSON.stringify(received).includes("private team"), false);
+  assert.equal(JSON.stringify(received).includes("private\""), false);
+});
+
 test("invalid signature and stale timestamp are rejected without invoking the handler", async () => {
   let calls = 0;
   await withReceiver(() => { calls += 1; }, async url => {

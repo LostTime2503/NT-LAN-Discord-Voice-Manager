@@ -386,3 +386,77 @@ test("webhook diagnostics report local health and only count a signed MAT test e
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("signed match.finished without tournament metadata releases the matching Wingman assignment", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "cs-webhook-finished-"));
+  const roomStatePath = join(directory, "rooms.json");
+  const eventStore = new CsEventStore(join(directory, "events.json"));
+  const manager = new CsDiscordManager({} as unknown as CsDiscordAdapter, "111111111111111180", 5_000, roomStatePath, true);
+  const participants = new Map<string, RegisteredPerson>([
+    [discordOne, { name: "One", firstName: "One", steamId: steamOne }],
+    [discordTwo, { name: "Two", firstName: "Two", steamId: steamTwo }],
+    ["123456789012345680", { name: "Three", firstName: "Three", steamId: "76561198000000003" }],
+    ["123456789012345681", { name: "Four", firstName: "Four", steamId: "76561198000000004" }]
+  ]);
+  const runtime = new CsWebhookRuntime({
+    secret,
+    port: 0,
+    host: "127.0.0.1",
+    intervalMs: 60_000,
+    registration: { getParticipants: async () => new Map() },
+    discordManager: manager,
+    store: eventStore,
+    report: () => undefined
+  });
+
+  try {
+    await manager.load();
+    await manager.reconcileWingmanSnapshot("4", {
+      id: "28",
+      slug: "mm-cb98061b",
+      status: "live",
+      tournamentId: "4",
+      round: 0,
+      team1: { id: "pair-a", name: "Pair A", tag: null, steamIds: [steamOne, steamTwo] },
+      team2: { id: "pair-b", name: "Pair B", tag: null, steamIds: ["76561198000000003", "76561198000000004"] }
+    }, participants, true);
+    assert.equal((await manager.getAssignments()).length, 2);
+
+    await runtime.start();
+    const address = runtime.address;
+    assert.ok(address);
+    const payload = {
+      id: "finished-without-tournament",
+      type: "match.finished",
+      test: false,
+      data: {
+        sequence: 10,
+        match: {
+          id: 28,
+          slug: "mm-cb98061b",
+          status: "completed",
+          game: "cs2",
+          tournament: null,
+          team1: { id: null, players: [] },
+          team2: { id: null, players: [] }
+        }
+      }
+    };
+    const body = Buffer.from(JSON.stringify(payload));
+    const timestamp = Math.floor(Date.now() / 1000);
+    const digest = createHmac("sha256", secret).update(`${timestamp}.`).update(body).digest("hex");
+    const response = await fetch(`http://127.0.0.1:${address.port}/webhooks/mat`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-at-signature": `t=${timestamp},v1=${digest}` },
+      body
+    });
+    assert.equal(response.status, 202);
+    await runtime.stop();
+
+    assert.deepEqual(await manager.getAssignments(), []);
+    assert.deepEqual(await eventStore.getPending(), []);
+  } finally {
+    await runtime.stop();
+    await rm(directory, { recursive: true, force: true });
+  }
+});

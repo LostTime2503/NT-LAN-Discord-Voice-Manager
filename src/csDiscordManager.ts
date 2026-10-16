@@ -204,6 +204,17 @@ export class CsDiscordManager {
     };
   }
 
+  async releaseWingmanMatchWithoutTournament(matchSlug: string): Promise<number | null> {
+    this.assertLoaded();
+    const matches = [...this.assignments.entries()].filter(([, assignment]) =>
+      assignment.scope === "wingman" && assignment.matchSlug === matchSlug);
+    const tournamentIds = new Set(matches.map(([, assignment]) => assignment.tournamentId));
+    if (tournamentIds.size > 1) return null;
+    for (const [key] of matches) this.assignments.delete(key);
+    if (matches.length) await this.persist();
+    return matches.length;
+  }
+
   async reconcileMainTournamentRooms(
     tournamentId: string,
     bracket: MatBracketSummary,

@@ -13,6 +13,7 @@ const acceptedEventTypes = new Set([
   "match.reset"
 ]);
 const relevantEventTypes = new Set(["match.ready", "match.finished", "match.cancelled", "match.reset"]);
+const terminalEventTypes = new Set(["match.finished", "match.cancelled", "match.reset"]);
 
 export interface MatWebhookTeam {
   id: string;
@@ -85,9 +86,11 @@ export function parseMatWebhookEvent(value: unknown): MatWebhookEvent | null {
   if (value.test) return null;
 
   const match = value.data.match;
+  const isTerminalEvent = terminalEventTypes.has(value.type);
   const matchId = stringId(match.id);
   const tournament = isRecord(match.tournament) ? stringId(match.tournament.id) : null;
-  if (!matchId || typeof match.slug !== "string" || !match.slug || typeof match.status !== "string" || !tournament) {
+  if (!matchId || typeof match.slug !== "string" || !match.slug || typeof match.status !== "string"
+    || (!tournament && !isTerminalEvent)) {
     throw new Error("invalid_match");
   }
   if (match.game !== undefined && match.game !== "cs2") throw new Error("unsupported_game");
@@ -101,9 +104,9 @@ export function parseMatWebhookEvent(value: unknown): MatWebhookEvent | null {
       id: matchId,
       slug: match.slug,
       status: match.status,
-      tournamentId: tournament,
-      team1: parseTeam(match.team1),
-      team2: parseTeam(match.team2)
+      tournamentId: tournament ?? "",
+      team1: isTerminalEvent ? null : parseTeam(match.team1),
+      team2: isTerminalEvent ? null : parseTeam(match.team2)
     }
   };
 }

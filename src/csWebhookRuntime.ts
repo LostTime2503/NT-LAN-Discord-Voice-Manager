@@ -43,6 +43,7 @@ export interface CsWebhookRuntimeDiagnostics {
 const terminalMatchStatuses = new Set(["completed", "cancelled", "canceled", "bye", "reset"]);
 const activeWingmanStatuses = new Set(["ready", "loaded", "live", "in_progress", "playing"]);
 const waitingWingmanStatuses = new Set(["pending", "waiting", "scheduled"]);
+const terminalWebhookEventTypes = new Set(["match.finished", "match.cancelled", "match.reset"]);
 
 export function selectRecoverableWingmanMatches(bracket: MatBracketSummary): string[] | null {
   if (bracket.tournament.type !== "shuffle" || bracket.tournament.teamSize !== 2) return null;
@@ -228,6 +229,21 @@ export class CsWebhookRuntime {
   private async drainPending(): Promise<void> {
     try {
       for (const event of await this.store.getPending()) {
+        if (!event.match.tournamentId && terminalWebhookEventTypes.has(event.type)) {
+          const released = this.options.discordManager
+            ? await this.options.discordManager.releaseWingmanMatchWithoutTournament(event.match.slug)
+            : 0;
+          if (released === null) {
+            console.warn("CS terminal webhook event was ambiguous without a tournament ID; no Wingman assignments were changed.");
+          } else if (released > 0) {
+            console.log("CS terminal webhook event released Wingman assignments", {
+              eventType: event.type,
+              releasedAssignments: released
+            });
+          }
+          await this.store.markProcessed(event.id);
+          continue;
+        }
         const tournament = await this.tournamentFor(event);
         if (!tournament) {
           await this.store.markProcessed(event.id);

@@ -520,6 +520,30 @@ test("cancel-all prevents the Discord adapter from deleting a room on an existin
   assert.equal(cleanupCalls, 0);
 });
 
+test("terminal event without tournament releases Wingman assignments only for a unique match slug", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "cs-terminal-match-cleanup-"));
+  const adapter = new FakeDiscordAdapter();
+  const manager = new CsDiscordManager(adapter, "111111111111111111", 5_000, join(directory, "rooms.json"), true);
+  const match: MatMatchSnapshot = {
+    id: "wingman-28",
+    slug: "mm-cb98061b",
+    status: "live",
+    tournamentId: "4",
+    round: 1,
+    team1: { id: "pair-a", name: "Pair A", tag: null, steamIds: [steamOne, steamTwo] },
+    team2: { id: "pair-b", name: "Pair B", tag: null, steamIds: [steamThree, steamFour] }
+  };
+  try {
+    await manager.load();
+    await manager.reconcileWingmanSnapshot("4", match, participants, true);
+    assert.equal((await manager.getAssignments()).length, 2);
+    assert.equal(await manager.releaseWingmanMatchWithoutTournament(match.slug), 2);
+    assert.deepEqual(await manager.getAssignments(), []);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("CS bitrate plan selects rooms that differ from the current server maximum", () => {
   const rooms = [
     { id: "room-low", bitrate: 96_000 },
