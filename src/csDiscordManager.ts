@@ -52,6 +52,11 @@ export interface CsDiscordSyncSummary {
   ambiguousSteamIds: number;
 }
 
+export interface CsDiscordActivity {
+  type: "member-moved";
+  roomName: string;
+}
+
 export interface CsParticipantRoleSummary {
   granted: number;
   removed: number;
@@ -94,7 +99,8 @@ export class CsDiscordManager {
     private readonly lobbyChannelId: string,
     private readonly deleteDelayMs: number,
     private readonly filePath = "data/cs-owned-voice-channels.json",
-    private readonly globallyDryRun = true
+    private readonly globallyDryRun = true,
+    private readonly reportActivity?: (activity: CsDiscordActivity) => void
   ) {}
 
   async load(): Promise<void> {
@@ -373,7 +379,15 @@ export class CsDiscordManager {
     const channelId = ensured.channelId;
     this.rooms.set(request.key, { ...request, channelId });
     await this.persist();
-    return moveMember(channelId);
+    const moved = await moveMember(channelId);
+    if (moved) {
+      try {
+        this.reportActivity?.({ type: "member-moved", roomName: request.name });
+      } catch (error) {
+        console.error("CS voice activity log failed", error);
+      }
+    }
+    return moved;
   }
 
   async getRooms(): Promise<OwnedCsRoom[]> {

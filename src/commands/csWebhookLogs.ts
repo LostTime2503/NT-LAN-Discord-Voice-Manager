@@ -15,7 +15,7 @@ function formatLogTime(timestamp: Date): string {
 export const csWebhookLogsCommand = {
   data: new SlashCommandBuilder()
     .setName("cs-webhook-logs")
-    .setDescription("Vis de siste CS-webhook-oppsummeringene fra Crew-loggen."),
+    .setDescription("Vis nylige CS-webhook-hendelser og botthandlinger fra Crew-loggen."),
 
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });

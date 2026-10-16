@@ -172,8 +172,9 @@ test("match-ready stores team assignments and creates only the joining member's 
   const directory = await mkdtemp(join(tmpdir(), "cs-discord-manager-"));
   const path = join(directory, "rooms.json");
   const adapter = new FakeDiscordAdapter();
+  const actions: Array<{ type: string; roomName: string }> = [];
   try {
-    const manager = new CsDiscordManager(adapter, "111111111111111111", 5_000, path, false);
+    const manager = new CsDiscordManager(adapter, "111111111111111111", 5_000, path, false, action => actions.push(action));
     await manager.load();
     adapter.memberChannels.set(discordOne, "111111111111111111");
     const summary = await manager.handleMatchEvent(matchEvent("match.ready"), "main", participants, false);
@@ -181,6 +182,7 @@ test("match-ready stores team assignments and creates only the joining member's 
     assert.equal(summary.updatedRooms, 1);
     assert.deepEqual(adapter.ensured.map(room => room.key), ["main:3:team-one"]);
     assert.deepEqual(adapter.moved, [{ memberId: discordOne, channelId: "222222222222222222" }]);
+    assert.deepEqual(actions, [{ type: "member-moved", roomName: "CS ONE" }]);
     assert.deepEqual((await manager.getAssignments()).map(request => request.key), ["main:3:team-one", "main:3:team-two"]);
     assert.equal(await manager.getRooms().then(rooms => rooms.length), 1);
 

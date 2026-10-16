@@ -494,7 +494,13 @@ async function startCsVoiceSync(enabled = config.csVoiceSyncEnabled, live = !con
           config.csLobbyChannelId!,
           config.csEmptyChannelDeleteDelayMs,
           undefined,
-          !live
+          !live,
+          activity => {
+            console.log("CS webhook action", activity);
+            void sendCrewLogMessage(client, getBotText("cs.webhookMoved", {
+              room: activity.roomName
+            }, "logs"));
+          }
         );
       }
       csWebhookRuntime = new CsWebhookRuntime({

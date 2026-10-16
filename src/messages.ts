@@ -101,7 +101,7 @@ const defaultCommandMessages: Record<string, string> = {
   "csWebhookLogs.channelMissing": "CREW_LOG_CHANNEL_ID mangler. Loggkanalen må være konfigurert.",
   "csWebhookLogs.channelInvalid": "CREW_LOG_CHANNEL_ID peker ikke på en tekstkanal i denne serveren.",
   "csWebhookLogs.permissions": "Boten trenger View Channel og Read Message History i Crew-loggkanalen.",
-  "csWebhookLogs.title": "Siste CS-webhook-oppsummeringer:",
+  "csWebhookLogs.title": "Siste CS-webhook-hendelser og botthandlinger:",
   "csWebhookLogs.empty": "Ingen CS-webhook-hendelser finnes blant de siste 1 000 Crew-loggmeldingene.",
   "csWebhookLogs.failed": "Kunne ikke hente CS-webhook-loggen.",
   "csMaxBitrate.notConfigured": "CS_CATEGORY_ID og CREW_ROLE_ID må være konfigurert.",
@@ -349,6 +349,7 @@ const defaultLogMessages: Record<string, string> = {
   "meal.rolesSummary": "Måltidsroller synkronisert: {pulje1} i Pulje 1, {pulje2} i Pulje 2, {added} lagt til, {removed} fjernet, {missing} uten måltidsdata.",
   "cs.webhookSummary": "CS webhook {tournament} {eventType}: {planned} rom, {members} spillere i plan, {updated} flyttet, {skipped} lag utelatt, {unmatched} uten Steam-kobling, {ambiguous} tvetydige SteamID-er.",
   "cs.webhookTestReceived": "CS webhook test: signert MAT-testevent mottatt ({eventType}); ingen kamp ble behandlet.",
+  "cs.webhookMoved": "CS webhook action: Flyttet en tildelt spiller til {room}.",
   "cs.recoverySummary": "CS recovery-forhåndsvisning: {main} main-rom, {wingman} Wingman-rom, {unmatched} uten kobling.",
   "voice.channelCreated": "Vanlig midlertidig voice-kanal opprettet og eier flyttet inn.",
   "voice.channelDeleted": "Tom vanlig midlertidig voice-kanal slettet."
