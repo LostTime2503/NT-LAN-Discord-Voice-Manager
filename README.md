@@ -249,6 +249,8 @@ Inngangsmeldingen har nettsidelenke og **Sjekk tilgang**-knapp. Knappen gir et p
 
 `/cs-webhook-check` viser om den lokale MAT-mottakeren svarer, og når den sist mottok et signert testevent. Klikk først **Send test event** i MAT, vent litt og kjør kommandoen; den leser ikke payloaden og utfører ingen Discord-endringer.
 
+`/cs-webhook-logs` viser de siste botskrevne CS-webhook-oppsummeringene fra `CREW_LOG_CHANNEL_ID` privat for Crew. Boten trenger `View Channel` og `Read Message History` i kanalen; kommandoen leser bare de siste 100 meldingene og filtrerer på CS-webhook-oppsummeringer.
+
 `/set-up-crew-help` publiserer eller oppdaterer en Crew-guide med botens funksjoner, hvordan `/bot-settings` styrer dem, og hvor man finner kommandohjelp. Standardkanalen er `CREW_LOG_CHANNEL_ID`; du kan velge en annen tekstkanal med `kanal`. Boten trenger `Send Messages`, `Embed Links` og `Read Message History` der. Rediger `commands.crewHelp.announcement` i `messages.json` som én array-linje per tekstlinje. Etter tekstendring: kjør `/reload-messages`, deretter `/set-up-crew-help` for å oppdatere innlegget. Kjør `/crew-help` for den separate private kommandooversikten.
 
 `/bot-settings` uten valg viser status. Velg funksjon og `aktiv` for å pause/gjenoppta nettsidetilgang, vanlig voice, CS-roller eller CS-voice. Påslåing av muterende sync starter alltid i forhåndsvisning; etter kontroll av Dockhand-loggen kan Crew kjøre kommandoen igjen med `bekreft_live:true`. Innstillingene lagres i `data/bot-settings.json` i `bot-data`-volumet. Pausing stopper automatikken uten å slette roller eller kanaler. Vanlig voice rydder ikke kanaler ved oppstart.

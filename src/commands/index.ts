@@ -21,6 +21,7 @@ import { crewHelpCommand } from "./crewHelp.js";
 import { setupCrewHelpCommand } from "./setupCrewHelp.js";
 import { csWebhookCheckCommand } from "./csWebhookCheck.js";
 import { csMaxBitrateCommand } from "./csMaxBitrate.js";
+import { csWebhookLogsCommand } from "./csWebhookLogs.js";
 
 export const commands = [
   pingCommand,
@@ -45,7 +46,8 @@ export const commands = [
   crewHelpCommand,
   setupCrewHelpCommand,
   csWebhookCheckCommand,
-  csMaxBitrateCommand
+  csMaxBitrateCommand,
+  csWebhookLogsCommand
 ];
 
 export function findCommand(commandName: string) {
