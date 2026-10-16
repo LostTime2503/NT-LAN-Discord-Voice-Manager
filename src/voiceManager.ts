@@ -10,7 +10,7 @@ import {
 } from "discord.js";
 import { config } from "./config.js";
 import { sendCrewLogMessage } from "./crewLog.js";
-import { accessInitializationError, accessManager } from "./accessRuntime.js";
+import { accessManager } from "./accessRuntime.js";
 import { createTemporaryVoiceOverwrites } from "./voicePermissions.js";
 import { getBotText } from "./messages.js";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -22,7 +22,6 @@ const deleteTimers = new Map<string, NodeJS.Timeout>();
 const ownersPath = join(process.cwd(), "data", "voice-owners.json");
 let ownerSave: Promise<void> = Promise.resolve();
 let voiceManagerEnabled = Boolean(config.joinToCreateChannelId);
-const warnedUnprotectedCategories = new Set<string>();
 
 export function setVoiceManagerEnabled(enabled: boolean): void {
   voiceManagerEnabled = enabled;
@@ -133,7 +132,6 @@ export async function cleanupEmptyVoiceChannelsOnStartup(client: Client): Promis
 
   for (const member of strandedMembers) {
     try {
-      if (accessManager && !accessManager.canUseVoice(member)) continue;
       await createTemporaryChannelForMember(member, joinToCreateChannel.parent);
       movedCount += 1;
     } catch (error) {
@@ -156,18 +154,6 @@ async function handleJoinToCreate(newState: VoiceState): Promise<void> {
 }
 
 async function createTemporaryChannelForMember(member: GuildMember, parent: CategoryChannel | null): Promise<void> {
-  if (accessInitializationError) throw new Error("Access sync is unavailable; fix configuration before creating new voice channels.");
-  if (accessManager && !accessManager.canUseVoice(member)) return;
-  if (accessManager && !accessManager.settings.dryRun
-    && !accessManager.isVoiceCategoryProtected(parent)) {
-    const categoryId = parent?.id ?? "no-category";
-    if (!warnedUnprotectedCategories.has(categoryId)) {
-      warnedUnprotectedCategories.add(categoryId);
-      const warning = "Join-to-create category may have incorrect @everyone/access-role View Channel or Connect overwrites; continuing and granting the creator access to their new channel.";
-      console.warn(warning);
-      void sendCrewLogMessage(member.client, warning);
-    }
-  }
   const channel = await member.guild.channels.create({
     name: `${member.displayName} sin kanal`,
     type: ChannelType.GuildVoice,

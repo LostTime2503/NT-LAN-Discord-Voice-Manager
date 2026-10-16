@@ -82,10 +82,37 @@ test("command definitions load without initializing incomplete access configurat
     const runtime = await import('./src/accessRuntime.ts');
     assert.equal(runtime.accessManager, undefined);
     assert.match(runtime.accessInitializationError, /REGISTRATION|ACCESS_ROLE_ID/);
-    const { handleVoiceStateUpdate } = await import('./src/voiceManager.ts');
-    await assert.rejects(handleVoiceStateUpdate(
-      { channel: null }, { channelId: '${discordId}', member: {}, channel: { parent: null } }
-    ), /Access sync is unavailable/);
+    const { mkdtemp, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const previousDirectory = process.cwd();
+    const temporaryDirectory = await mkdtemp(join(tmpdir(), 'voice-without-access-'));
+    process.chdir(temporaryDirectory);
+    try {
+      const { handleVoiceStateUpdate } = await import('./src/voiceManager.ts');
+      let createdChannels = 0;
+      let movedTo = '';
+      const createdChannel = { id: '222222222222222222', parent: null };
+      const guild = {
+        id: '${discordId}',
+        maximumBitrate: 64000,
+        channels: { create: async () => { createdChannels += 1; return createdChannel; } }
+      };
+      const member = {
+        id: '${discordId}',
+        guild,
+        displayName: 'Test member',
+        voice: { setChannel: async channel => { movedTo = channel.id; } }
+      };
+      await handleVoiceStateUpdate({ channel: null }, {
+        channelId: '${discordId}', channel: null, member
+      });
+      assert.equal(createdChannels, 1);
+      assert.equal(movedTo, createdChannel.id);
+    } finally {
+      process.chdir(previousDirectory);
+      await rm(temporaryDirectory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
   `;
   for (const completeApi of [false, true]) {
     const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", script], {
