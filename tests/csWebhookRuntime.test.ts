@@ -90,7 +90,7 @@ test("recovered match normalization retains pairing identity but not connect dat
   assert.equal(JSON.stringify(recovered).includes("password"), false);
 });
 
-test("signed match.ready is persisted then produces aggregate dry-run plan only", async () => {
+test("signed room-start events produce aggregate dry-run plans", async () => {
   const directory = await mkdtemp(join(tmpdir(), "cs-webhook-runtime-"));
   const store = new CsEventStore(join(directory, "events.json"));
   const participants = new Map<string, RegisteredPerson>([
@@ -98,7 +98,6 @@ test("signed match.ready is persisted then produces aggregate dry-run plan only"
     [discordTwo, { name: "private player two", firstName: "Player", steamId: steamTwo }]
   ]);
   let resolveReport!: (report: CsWebhookDryRunReport) => void;
-  const reportPromise = new Promise<CsWebhookDryRunReport>(resolve => { resolveReport = resolve; });
   const runtime = new CsWebhookRuntime({
     secret,
     port: 0,
@@ -115,54 +114,56 @@ test("signed match.ready is persisted then produces aggregate dry-run plan only"
       getCsParticipants: async () => participants
     },
     store,
-    report: resolveReport
+    report: summary => resolveReport(summary)
   });
 
   try {
     await runtime.start();
     const address = runtime.address;
     assert.ok(address);
-    const payload = {
-      id: "runtime-event-1",
-      type: "match.ready",
-      test: false,
-      data: {
-        sequence: 1,
-        match: {
-          id: 12,
-          slug: "fixture-match",
-          status: "loaded",
-          game: "cs2",
-          tournament: { id: 3 },
-          team1: { id: "team-one", name: "private", tag: "A", players: [{ steam_id64: steamOne }] },
-          team2: { id: "team-two", name: "private", tag: "B", players: [{ steam_id64: steamTwo }] },
-          connect: { password: "must-not-be-retained" }
+    for (const [index, eventType] of ["match.ready", "match.live", "match.map_started"].entries()) {
+      const reportPromise = new Promise<CsWebhookDryRunReport>(resolve => { resolveReport = resolve; });
+      const body = Buffer.from(JSON.stringify({
+        id: `runtime-${eventType}`,
+        type: eventType,
+        test: false,
+        data: {
+          sequence: index + 1,
+          match: {
+            id: 12,
+            slug: "fixture-match",
+            status: "loaded",
+            game: "cs2",
+            tournament: { id: 3 },
+            team1: { id: "team-one", name: "private", tag: "A", players: [{ steam_id64: steamOne }] },
+            team2: { id: "team-two", name: "private", tag: "B", players: [{ steam_id64: steamTwo }] },
+            connect: { password: "must-not-be-retained" }
+          }
         }
-      }
-    };
-    const body = Buffer.from(JSON.stringify(payload));
-    const timestamp = Math.floor(Date.now() / 1000);
-    const digest = createHmac("sha256", secret).update(`${timestamp}.`).update(body).digest("hex");
-    const response = await fetch(`http://127.0.0.1:${address.port}/webhooks/mat`, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-at-signature": `t=${timestamp},v1=${digest}` },
-      body
-    });
-    assert.equal(response.status, 202);
-    const report = await Promise.race([
-      reportPromise,
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("dry-run was not reported")), 2_000))
-    ]);
-    assert.deepEqual(report, {
-      eventType: "match.ready",
-      tournament: "main",
-      plannedRooms: 2,
-      plannedMembers: 2,
-      updatedRooms: 0,
-      skippedTeams: 0,
-      unmatchedPlayers: 0,
-      ambiguousSteamIds: 0
-    });
+      }));
+      const timestamp = Math.floor(Date.now() / 1000);
+      const digest = createHmac("sha256", secret).update(`${timestamp}.`).update(body).digest("hex");
+      const response = await fetch(`http://127.0.0.1:${address.port}/webhooks/mat`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-at-signature": `t=${timestamp},v1=${digest}` },
+        body
+      });
+      assert.equal(response.status, 202);
+      const report = await Promise.race([
+        reportPromise,
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`${eventType} was not reported`)), 2_000))
+      ]);
+      assert.deepEqual(report, {
+        eventType,
+        tournament: "main",
+        plannedRooms: 2,
+        plannedMembers: 2,
+        updatedRooms: 0,
+        skippedTeams: 0,
+        unmatchedPlayers: 0,
+        ambiguousSteamIds: 0
+      });
+    }
     assert.deepEqual(await store.getPending(), []);
   } finally {
     await runtime.stop();

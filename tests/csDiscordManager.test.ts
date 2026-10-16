@@ -168,6 +168,7 @@ test("dry-run plans rooms but never calls Discord adapter", async () => {
   }
 });
 
+
 test("match-ready stores team assignments and creates only the joining member's room", async () => {
   const directory = await mkdtemp(join(tmpdir(), "cs-discord-manager-"));
   const path = join(directory, "rooms.json");
@@ -553,4 +554,25 @@ test("CS bitrate plan selects rooms that differ from the current server maximum"
     { id: "room-other", bitrate: 256_000 }
   ];
   assert.deepEqual(getCsVoiceRoomsNeedingBitrateUpdate(rooms, 384_000).map(room => room.id), ["room-low", "room-other"]);
+});
+
+test("match.live and match.map_started also produce room assignments", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "cs-discord-start-fallback-"));
+  const manager = new CsDiscordManager(
+    new FakeDiscordAdapter(),
+    "111111111111111111",
+    5_000,
+    join(directory, "rooms.json")
+  );
+  try {
+    await manager.load();
+    for (const eventType of ["match.live", "match.map_started"]) {
+      const summary = await manager.handleMatchEvent(matchEvent(eventType), "main", participants, true);
+      assert.equal(summary.plannedRooms, 2);
+      assert.equal(summary.plannedMembers, 2);
+    }
+    assert.equal((await manager.getAssignments()).length, 2);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });

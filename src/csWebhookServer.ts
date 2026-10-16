@@ -12,8 +12,18 @@ const acceptedEventTypes = new Set([
   "match.cancelled",
   "match.reset"
 ]);
-const relevantEventTypes = new Set(["match.ready", "match.finished", "match.cancelled", "match.reset"]);
+const roomAssignmentEventTypes = new Set(["match.ready", "match.live", "match.map_started"]);
+const relevantEventTypes = new Set([
+  ...roomAssignmentEventTypes,
+  "match.finished",
+  "match.cancelled",
+  "match.reset"
+]);
 const terminalEventTypes = new Set(["match.finished", "match.cancelled", "match.reset"]);
+
+export function isCsRoomAssignmentEvent(type: string): boolean {
+  return roomAssignmentEventTypes.has(type);
+}
 
 export interface MatWebhookTeam {
   id: string;

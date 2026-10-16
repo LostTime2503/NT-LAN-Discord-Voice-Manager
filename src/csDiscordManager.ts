@@ -3,7 +3,7 @@ import { dirname } from "node:path";
 import type { VoiceState } from "discord.js";
 import { planCsTeamRooms } from "./csTournamentSync.js";
 import type { MatBracketSummary, MatMatchSnapshot, MatTeam } from "./matClient.js";
-import type { MatWebhookEvent } from "./csWebhookServer.js";
+import { isCsRoomAssignmentEvent, type MatWebhookEvent } from "./csWebhookServer.js";
 import type { RegisteredPerson } from "./registrationClient.js";
 
 export type CsVoiceRoomScope = "main" | "wingman";
@@ -133,7 +133,7 @@ export class CsDiscordManager {
   ): Promise<CsDiscordSyncSummary> {
     this.assertLoaded();
     const effectiveDryRun = dryRun || this.globallyDryRun;
-    if (event.type !== "match.ready") {
+    if (!isCsRoomAssignmentEvent(event.type)) {
       if (scope === "wingman" && ["match.finished", "match.cancelled", "match.reset"].includes(event.type)) {
         for (const [key, assignment] of this.assignments) {
           if (assignment.scope === "wingman" && assignment.tournamentId === event.match.tournamentId

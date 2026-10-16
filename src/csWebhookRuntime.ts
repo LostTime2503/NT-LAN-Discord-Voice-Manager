@@ -1,4 +1,4 @@
-import { createMatWebhookReceiver } from "./csWebhookServer.js";
+import { createMatWebhookReceiver, isCsRoomAssignmentEvent } from "./csWebhookServer.js";
 import type { MatWebhookEvent } from "./csWebhookServer.js";
 import { CsEventStore } from "./csEventStore.js";
 import type { MatBracketSummary, MatClient, MatMatchSnapshot, MatTeam } from "./matClient.js";
@@ -87,6 +87,7 @@ export class CsWebhookRuntime {
   private receiver: ReturnType<typeof createMatWebhookReceiver> | undefined;
   private retryTimer: NodeJS.Timeout | undefined;
   private processing: Promise<void> | undefined;
+  private processRequestedWhileRunning = false;
   private readonly tournamentScopes = new Map<string, "main" | "wingman">();
   private activeMainTournamentId: number | undefined;
   private activeWingmanTournamentId: number | undefined;
@@ -234,14 +235,22 @@ export class CsWebhookRuntime {
   }
 
   private processPending(): void {
-    if (this.processing || !this.receiver) return;
+    if (!this.receiver) return;
+    if (this.processing) {
+      this.processRequestedWhileRunning = true;
+      return;
+    }
     const processing = this.drainPending();
     this.processing = processing;
-    void processing.then(() => {
-      if (this.processing === processing) this.processing = undefined;
-    }, () => {
-      if (this.processing === processing) this.processing = undefined;
-    });
+    const finish = () => {
+      if (this.processing !== processing) return;
+      this.processing = undefined;
+      if (this.processRequestedWhileRunning) {
+        this.processRequestedWhileRunning = false;
+        this.processPending();
+      }
+    };
+    void processing.then(finish, finish);
   }
 
   private async drainPending(): Promise<void> {
@@ -326,7 +335,7 @@ export class CsWebhookRuntime {
 
   private async processEvent(event: MatWebhookEvent, tournament: "main" | "wingman"): Promise<void> {
     if (this.options.discordManager) {
-      const participants = event.type === "match.ready"
+      const participants = isCsRoomAssignmentEvent(event.type)
         ? await this.getCsParticipants()
         : new Map();
       const summary = await this.options.discordManager.handleMatchEvent(
@@ -347,7 +356,7 @@ export class CsWebhookRuntime {
       });
       return;
     }
-    if (event.type !== "match.ready") {
+    if (!isCsRoomAssignmentEvent(event.type)) {
       this.report({ eventType: event.type, tournament, plannedRooms: 0, plannedMembers: 0, updatedRooms: 0, skippedTeams: 0, unmatchedPlayers: 0, ambiguousSteamIds: 0 });
       return;
     }

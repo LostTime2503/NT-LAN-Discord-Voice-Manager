@@ -164,3 +164,20 @@ test("oversized, malformed, and wrong-method requests fail closed", async () => 
     assert.equal(malformed.status, 400);
   }, 32);
 });
+
+test("match.live and match.map_started are passed to room-assignment handling", async () => {
+  const received: MatWebhookEvent[] = [];
+  await withReceiver(event => { received.push(event); }, async url => {
+    for (const type of ["match.live", "match.map_started"]) {
+      const payload = { ...fixture, id: `${type}-event`, type };
+      const body = Buffer.from(JSON.stringify(payload));
+      const response = await fetch(`${url}/webhooks/mat`, {
+        method: "POST",
+        headers: signedHeaders(body),
+        body
+      });
+      assert.equal(response.status, 202);
+    }
+  });
+  assert.deepEqual(received.map(event => event.type), ["match.live", "match.map_started"]);
+});
