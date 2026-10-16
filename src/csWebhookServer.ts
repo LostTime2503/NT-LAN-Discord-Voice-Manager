@@ -12,7 +12,12 @@ const acceptedEventTypes = new Set([
   "match.cancelled",
   "match.reset"
 ]);
-const roomAssignmentEventTypes = new Set(["match.ready", "match.live", "match.map_started"]);
+const roomAssignmentEventTypes = new Set([
+  "match.ready",
+  "match.live",
+  "match.map_started",
+  "match.score_updated"
+]);
 const relevantEventTypes = new Set([
   ...roomAssignmentEventTypes,
   "match.finished",

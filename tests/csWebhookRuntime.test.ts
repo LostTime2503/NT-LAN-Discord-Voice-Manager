@@ -415,16 +415,16 @@ test("unknown MAT tournament IDs classify complete 5v5 and 2v2 room-start roster
       assert.deepEqual(await store.getPending(), []);
     };
 
-    await sendEvent({ eventType: "match.live", id: "main-live", matchId: 42, tournamentId: 7, sequence: 1, teamSize: 5 });
+    await sendEvent({ eventType: "match.score_updated", id: "main-score", matchId: 42, tournamentId: 7, sequence: 1, teamSize: 5 });
     await sendEvent({ eventType: "match.map_started", id: "main-map", matchId: 42, tournamentId: 7, sequence: 2, teamSize: 5 });
     await sendEvent({ eventType: "match.map_started", id: "wingman-map", matchId: 43, tournamentId: 8, sequence: 1, teamSize: 2 });
 
     assert.deepEqual(fallbacks, [
-      { eventType: "match.live", tournament: "main" },
+      { eventType: "match.score_updated", tournament: "main" },
       { eventType: "match.map_started", tournament: "wingman" }
     ]);
     assert.deepEqual(reports.map(report => [report.eventType, report.tournament, report.plannedRooms, report.plannedMembers]), [
-      ["match.live", "main", 2, 10],
+      ["match.score_updated", "main", 2, 10],
       ["match.map_started", "wingman", 2, 4]
     ]);
   } finally {

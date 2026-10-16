@@ -137,10 +137,10 @@ test("test events are acknowledged but never passed to the business handler", as
   assert.equal(calls, 0);
 });
 
-test("score and map updates are acknowledged without entering the voice event queue", async () => {
+test("map-ended updates are acknowledged without entering the voice event queue", async () => {
   let calls = 0;
   await withReceiver(() => { calls += 1; }, async url => {
-    const payload = { test: false, type: "match.score_updated" };
+    const payload = { test: false, type: "match.map_ended" };
     const body = Buffer.from(JSON.stringify(payload));
     const response = await fetch(`${url}/webhooks/mat`, { method: "POST", headers: signedHeaders(body), body });
     assert.equal(response.status, 202);
@@ -165,10 +165,10 @@ test("oversized, malformed, and wrong-method requests fail closed", async () => 
   }, 32);
 });
 
-test("match.live and match.map_started are passed to room-assignment handling", async () => {
+test("match.live, match.map_started, and match.score_updated are passed to room-assignment handling", async () => {
   const received: MatWebhookEvent[] = [];
   await withReceiver(event => { received.push(event); }, async url => {
-    for (const type of ["match.live", "match.map_started"]) {
+    for (const type of ["match.live", "match.map_started", "match.score_updated"]) {
       const payload = { ...fixture, id: `${type}-event`, type };
       const body = Buffer.from(JSON.stringify(payload));
       const response = await fetch(`${url}/webhooks/mat`, {
@@ -179,5 +179,5 @@ test("match.live and match.map_started are passed to room-assignment handling", 
       assert.equal(response.status, 202);
     }
   });
-  assert.deepEqual(received.map(event => event.type), ["match.live", "match.map_started"]);
+  assert.deepEqual(received.map(event => event.type), ["match.live", "match.map_started", "match.score_updated"]);
 });

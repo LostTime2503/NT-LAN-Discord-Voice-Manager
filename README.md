@@ -249,7 +249,7 @@ Inngangsmeldingen har nettsidelenke og **Sjekk tilgang**-knapp. Knappen gir et p
 
 `/cs-webhook-check` viser om den lokale MAT-mottakeren svarer, når den sist mottok et signert testevent, og typen på siste signerte request. Klikk først **Send test event** i MAT, vent litt og kjør kommandoen; testevent leses ikke som en kamp og utfører ingen Discord-endringer.
 
-MAT `match.ready`, `match.live` og `match.map_started` kan starte romrutingen; `match.live` og `match.map_started` fungerer som fallback hvis `match.ready` mangler. Botens aktive turneringsliste brukes først. Hvis turnerings-ID-en ikke finnes der, klassifiserer boten bare en komplett 5v5-roster som Main eller 2v2-roster som Wingman. Andre rosterstørrelser blir ignorert. `match.finished`, `match.cancelled` og `match.reset` brukes til avslutning/opprydding.
+MAT `match.ready`, `match.live`, `match.map_started` og `match.score_updated` kan starte romrutingen; senere eventer er fallback hvis et tidligere event manglet. Botens aktive turneringsliste brukes først. Hvis turnerings-ID-en ikke finnes der, klassifiserer boten bare en komplett 5v5-roster som Main eller 2v2-roster som Wingman. Andre rosterstørrelser blir ignorert. `match.finished`, `match.cancelled` og `match.reset` brukes til avslutning/opprydding.
 
 `/cs-webhook-logs` viser de siste botskrevne CS-webhook-hendelsene og handlingene fra `CREW_LOG_CHANNEL_ID` privat for Crew. Loggen viser mottatte og ignorerte events, planlagte rom, faktisk flytting og målets romnavn, utelatte lag, manglende Steam-koblinger og tvetydige SteamID-er, uten spilleridentiteter. Boten trenger `View Channel` og `Read Message History` i kanalen; kommandoen søker bakover gjennom opptil 1 000 meldinger.
 
