@@ -7,7 +7,9 @@ import { getBotMessages, getBotText } from "../messages.js";
 import { sendCrewLogMessage } from "../crewLog.js";
 import { consumeCommandPreview, issueCommandPreview } from "../commandPreviews.js";
 
-type Competition = "main" | "wingman";
+type Competition = "main" | "wingman" | "generic";
+
+const genericTeamNames = Array.from({ length: 8 }, (_, index) => `Team ${index + 1}`);
 
 function roomMarker(competition: Competition, teamName: string): string {
   const key = `${competition}:${teamName.normalize("NFC").trim().toLocaleLowerCase("nb-NO")}`;
@@ -22,9 +24,13 @@ function hasRoomMarker(name: string, marker: string): boolean {
 export const makeCsTeamRoomsCommand = {
   data: new SlashCommandBuilder()
     .setName("make-cs-team-rooms")
-    .setDescription("Forhåndsvis eller opprett de faste CS-lagrommene uten MAT.")
+    .setDescription("Forhåndsvis eller opprett faste eller generiske CS-lagrom uten MAT.")
     .addStringOption(option => option.setName("konkurranse").setDescription("Velg turnering.").setRequired(true)
-      .addChoices({ name: "Hovedturnering", value: "main" }, { name: "Wingman", value: "wingman" }))
+      .addChoices(
+        { name: "Hovedturnering", value: "main" },
+        { name: "Wingman", value: "wingman" },
+        { name: "Generelle lag (Team 1-8)", value: "generic" }
+      ))
     .addBooleanOption(option => option.setName("bekreft").setDescription("Opprett de manglende rommene fra forhåndsvisningen."))
     .addStringOption(option => option.setName("previewkode").setDescription("Engangskode fra forhåndsvisningen.").setMaxLength(8)),
 
@@ -51,7 +57,8 @@ export const makeCsTeamRoomsCommand = {
         await interaction.editReply(getBotText("makeTeamChats.categoryMissing"));
         return;
       }
-      const teamNames = getBotMessages().cs.teamNames;
+      const teamNames = competition === "generic" ? genericTeamNames : getBotMessages().cs.teamNames;
+      const roomScope = competition === "wingman" ? "wingman" : "main";
       const missing = teamNames.filter(teamName => {
         const marker = roomMarker(competition, teamName);
         return !category.children.cache.some(channel => channel.type === ChannelType.GuildVoice
@@ -84,7 +91,7 @@ export const makeCsTeamRoomsCommand = {
       for (const teamName of missing) {
         const marker = roomMarker(competition, teamName);
         await interaction.guild.channels.create({
-          name: formatCsRoomName(teamName, competition, marker),
+          name: formatCsRoomName(teamName, roomScope, marker),
           type: ChannelType.GuildVoice,
           parent: category.id,
           bitrate: interaction.guild.maximumBitrate,

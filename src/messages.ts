@@ -259,6 +259,7 @@ const defaultCommandMessages: Record<string, string> = {
   "makeFixedCsRooms.failed": "Kunne ikke forhåndsvise eller opprette de faste CS-lagrommene.",
   "makeFixedCsRooms.competition.main": "Hovedturnering",
   "makeFixedCsRooms.competition.wingman": "Wingman",
+  "makeFixedCsRooms.competition.generic": "Generelle lag (Team 1-8)",
   "csNotificationConsole.crewOnly": "Bare Crew og høyere kan administrere CS-varsler.",
   "csNotificationConsole.failed": "Kunne ikke fullføre handlingen for CS-varselet.",
   "csNotificationConsole.fieldsRequired": "Velg konkurranse og tekstkanal for å sende eller planlegge.",

@@ -69,7 +69,7 @@ test("command definitions load without initializing incomplete access configurat
     }
     const fixedRooms = definitions.find(command => command.name === 'make-cs-team-rooms');
     const competitionChoices = fixedRooms.options.find(option => option.name === 'konkurranse').choices.map(choice => choice.value);
-    assert.deepEqual(competitionChoices, ['main', 'wingman']);
+    assert.deepEqual(competitionChoices, ['main', 'wingman', 'generic']);
     const notifications = definitions.find(command => command.name === 'cs-notifications');
     assert.deepEqual(notifications.options, []);
     const mealNotifications = definitions.find(command => command.name === 'meal-notifications');
