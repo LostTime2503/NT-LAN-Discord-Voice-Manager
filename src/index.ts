@@ -515,6 +515,14 @@ async function startCsVoiceSync(enabled = config.csVoiceSyncEnabled, live = !con
           console.log("CS webhook test event received", { eventType });
           void sendCrewLogMessage(client, getBotText("cs.webhookTestReceived", { eventType }, "logs"));
         },
+        onEventReceived: eventType => {
+          console.log("CS webhook event queued", { eventType });
+          void sendCrewLogMessage(client, getBotText("cs.webhookReceived", { eventType }, "logs"));
+        },
+        onEventIgnored: eventType => {
+          console.warn("CS webhook event ignored; no active Main/Wingman tournament matched", { eventType });
+          void sendCrewLogMessage(client, getBotText("cs.webhookIgnored", { eventType }, "logs"));
+        },
         report: summary => {
           console.log("CS webhook plan", summary);
           void sendCrewLogMessage(client, getBotText("cs.webhookSummary", {

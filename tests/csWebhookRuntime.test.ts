@@ -236,6 +236,8 @@ test("webhook ACK follows durable acceptance without waiting for MAT discovery",
   let releaseDiscovery!: (tournaments: MatTournament[]) => void;
   const delayedDiscovery = new Promise<MatTournament[]>(resolve => { releaseDiscovery = resolve; });
   const store = new CsEventStore(join(directory, "events.json"));
+  const receivedEvents: string[] = [];
+  const ignoredEvents: string[] = [];
   const runtime = new CsWebhookRuntime({
     secret,
     port: 0,
@@ -250,6 +252,8 @@ test("webhook ACK follows durable acceptance without waiting for MAT discovery",
     } as unknown as MatClient,
     registration: { getParticipants: async () => new Map() },
     store,
+    onEventReceived: eventType => receivedEvents.push(eventType),
+    onEventIgnored: eventType => ignoredEvents.push(eventType),
     report: () => undefined
   });
 
@@ -272,6 +276,67 @@ test("webhook ACK follows durable acceptance without waiting for MAT discovery",
     assert.deepEqual((await store.getPending()).map(event => event.id), ["unknown-tournament-event"]);
   } finally {
     releaseDiscovery([{ id: 3, type: "single_elimination", status: "active", teamSize: 5 }]);
+    await runtime.stop();
+    assert.deepEqual(receivedEvents, ["match.ready"]);
+    assert.deepEqual(ignoredEvents, ["match.ready"]);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("refreshing MAT discovery removes tournament IDs that are no longer active", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "cs-webhook-stale-scope-"));
+  const ignoredEvents: string[] = [];
+  const reportedEvents: string[] = [];
+  let ignoredCount = 0;
+  let resolveFirstIgnored!: () => void;
+  let resolveSecondIgnored!: () => void;
+  const firstIgnored = new Promise<void>(resolve => { resolveFirstIgnored = resolve; });
+  const secondIgnored = new Promise<void>(resolve => { resolveSecondIgnored = resolve; });
+  let discoveryCalls = 0;
+  const runtime = new CsWebhookRuntime({
+    secret,
+    port: 0,
+    host: "127.0.0.1",
+    intervalMs: 60_000,
+    mat: {
+      getTournaments: async () => {
+        discoveryCalls += 1;
+        return discoveryCalls === 1
+          ? [{ id: 3, type: "single_elimination", status: "active", teamSize: 5 }]
+          : [];
+      }
+    } as unknown as MatClient,
+    registration: { getParticipants: async () => new Map() },
+    store: new CsEventStore(join(directory, "events.json")),
+    onEventIgnored: eventType => {
+      ignoredEvents.push(eventType);
+      ignoredCount += 1;
+      if (ignoredCount === 1) resolveFirstIgnored();
+      if (ignoredCount === 2) resolveSecondIgnored();
+    },
+    report: summary => reportedEvents.push(summary.eventType)
+  });
+
+  try {
+    await runtime.start();
+    const address = runtime.address;
+    assert.ok(address);
+    for (const [id, tournamentId, ignored] of [
+      ["removed-tournament", 99, firstIgnored],
+      ["stale-tournament", 3, secondIgnored]
+    ] as const) {
+      const request = signedReadyRequest(tournamentId, id);
+      const response = await fetch(`http://127.0.0.1:${address.port}/webhooks/mat`, {
+        method: "POST",
+        headers: request.headers,
+        body: request.body
+      });
+      assert.equal(response.status, 202);
+      await ignored;
+    }
+    assert.deepEqual(ignoredEvents, ["match.ready", "match.ready"]);
+    assert.deepEqual(reportedEvents, []);
+  } finally {
     await runtime.stop();
     await rm(directory, { recursive: true, force: true });
   }

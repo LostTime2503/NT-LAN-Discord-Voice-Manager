@@ -47,7 +47,7 @@ export const csWebhookCheckCommand = {
       } else {
         lines.push(getBotText("csWebhookCheck.testMissing"));
       }
-      if (diagnostics.lastSignedRequestAt !== null && !diagnostics.lastTestEventAt) {
+      if (diagnostics.lastSignedRequestAt !== null) {
         lines.push(getBotText("csWebhookCheck.lastSignedRequest", {
           eventType: diagnostics.lastSignedRequestType ?? "ukjent",
           time: formatReceivedAt(diagnostics.lastSignedRequestAt)

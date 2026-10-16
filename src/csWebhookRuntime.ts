@@ -32,6 +32,8 @@ export interface CsWebhookRuntimeOptions {
   store?: CsEventStore;
   report?: (summary: CsWebhookDryRunReport) => void;
   onTestEvent?: (eventType: string) => void;
+  onEventReceived?: (eventType: string) => void;
+  onEventIgnored?: (eventType: string) => void;
 }
 
 export interface CsWebhookRuntimeDiagnostics {
@@ -197,7 +199,14 @@ export class CsWebhookRuntime {
       },
       onEvent: async event => {
         const result = await this.store.accept(event);
-        if (result === "accepted") void this.processPending();
+        if (result === "accepted") {
+          try {
+            this.options.onEventReceived?.(event.type);
+          } catch (error) {
+            console.error("CS webhook receipt log failed", error);
+          }
+          void this.processPending();
+        }
       }
     });
     await new Promise<void>((resolve, reject) => {
@@ -255,6 +264,11 @@ export class CsWebhookRuntime {
         }
         const tournament = await this.tournamentFor(event);
         if (!tournament) {
+          try {
+            this.options.onEventIgnored?.(event.type);
+          } catch (error) {
+            console.error("CS webhook ignored-event log failed", error);
+          }
           await this.store.markProcessed(event.id);
           continue;
         }
@@ -286,6 +300,7 @@ export class CsWebhookRuntime {
     const discovery = discoverActiveCsTournaments(tournaments);
     this.activeMainTournamentId = discovery.main?.id;
     this.activeWingmanTournamentId = discovery.wingman?.id;
+    this.tournamentScopes.clear();
     const activeByScope = new Map<"main" | "wingman", string[]>();
     for (const tournament of tournaments) {
       const scope = classifyCsTournament(tournament);
