@@ -202,6 +202,33 @@ test("match-ready stores team assignments and creates only the joining member's 
   }
 });
 
+test("incomplete Wingman roster reports no rooms and skips both teams", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "cs-discord-incomplete-wingman-"));
+  const adapter = new FakeDiscordAdapter();
+  const manager = new CsDiscordManager(adapter, "111111111111111111", 5_000, join(directory, "rooms.json"), false);
+  try {
+    await manager.load();
+    const summary = await manager.handleMatchEvent(
+      matchEvent("match.score_updated", "7", "mm-a0a5be6a", [steamOne], [steamTwo, steamThree]),
+      "wingman",
+      participants,
+      false
+    );
+    assert.deepEqual(summary, {
+      plannedRooms: 0,
+      plannedMembers: 0,
+      updatedRooms: 0,
+      skippedTeams: 2,
+      unmatchedPlayers: 0,
+      ambiguousSteamIds: 0
+    });
+    assert.equal(adapter.ensured.length, 0);
+    assert.deepEqual(await manager.getAssignments(), []);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("duplicate active assignments fail closed; terminal Wingman events clear routing without Discord mutations", async () => {
   const directory = await mkdtemp(join(tmpdir(), "cs-discord-manager-"));
   const path = join(directory, "rooms.json");

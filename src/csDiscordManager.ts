@@ -161,10 +161,10 @@ export class CsDiscordManager {
     );
     if (!completeWingmanPairing) {
       return {
-        plannedRooms: plan.rooms.length,
+        plannedRooms: 0,
         plannedMembers: 0,
         updatedRooms: 0,
-        skippedTeams: Math.max(plan.skippedTeamCount, 2 - plan.rooms.length),
+        skippedTeams: Math.max(plan.skippedTeamCount, 2),
         unmatchedPlayers: plan.unmatchedParticipantCount,
         ambiguousSteamIds: plan.ambiguousSteamIdCount
       };
