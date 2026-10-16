@@ -172,7 +172,8 @@ export class CsDiscordManager {
 
     if (scope === "wingman") {
       for (const [key, assignment] of this.assignments) {
-        if (assignment.scope === "wingman" && assignment.tournamentId === event.match.tournamentId) {
+        if (assignment.scope === "wingman" && assignment.tournamentId === event.match.tournamentId
+          && assignment.matchSlug === event.match.slug) {
           this.assignments.delete(key);
         }
       }

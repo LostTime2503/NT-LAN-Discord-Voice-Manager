@@ -229,6 +229,45 @@ test("incomplete Wingman roster reports no rooms and skips both teams", async ()
   }
 });
 
+test("simultaneous Wingman matches keep separate room assignments", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "cs-discord-concurrent-wingman-"));
+  const adapter = new FakeDiscordAdapter();
+  const manager = new CsDiscordManager(adapter, "111111111111111111", 5_000, join(directory, "rooms.json"), false);
+  const additionalParticipants = new Map(participants);
+  const extraEntries: Array<[string, RegisteredPerson]> = [
+    ["123456789012345682", { name: "Five", firstName: "Five", steamId: "76561198000000005" }],
+    ["123456789012345683", { name: "Six", firstName: "Six", steamId: "76561198000000006" }],
+    ["123456789012345684", { name: "Seven", firstName: "Seven", steamId: "76561198000000007" }],
+    ["123456789012345685", { name: "Eight", firstName: "Eight", steamId: "76561198000000008" }]
+  ];
+  for (const [discordId, participant] of extraEntries) additionalParticipants.set(discordId, participant);
+
+  try {
+    await manager.load();
+    for (const discordId of additionalParticipants.keys()) adapter.memberChannels.set(discordId, "111111111111111111");
+
+    const first = await manager.handleMatchEvent(
+      matchEvent("match.map_started", "4", "wingman-a", [steamOne, steamTwo], [steamThree, steamFour]),
+      "wingman",
+      additionalParticipants,
+      false
+    );
+    const second = await manager.handleMatchEvent(
+      matchEvent("match.score_updated", "4", "wingman-b", ["76561198000000005", "76561198000000006"], ["76561198000000007", "76561198000000008"]),
+      "wingman",
+      additionalParticipants,
+      false
+    );
+
+    assert.equal(first.updatedRooms, 4);
+    assert.equal(second.updatedRooms, 4);
+    assert.equal((await manager.getAssignments()).filter(request => request.scope === "wingman").length, 4);
+    assert.equal(adapter.moved.length, 8);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("duplicate active assignments fail closed; terminal Wingman events clear routing without Discord mutations", async () => {
   const directory = await mkdtemp(join(tmpdir(), "cs-discord-manager-"));
   const path = join(directory, "rooms.json");
