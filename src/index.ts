@@ -505,6 +505,10 @@ async function startCsVoiceSync(enabled = config.csVoiceSyncEnabled, live = !con
         registration: csRegistration,
         dryRun: !live,
         discordManager: csDiscordManager,
+        onTestEvent: eventType => {
+          console.log("CS webhook test event received", { eventType });
+          void sendCrewLogMessage(client, getBotText("cs.webhookTestReceived", { eventType }, "logs"));
+        },
         report: summary => {
           console.log("CS webhook plan", summary);
           void sendCrewLogMessage(client, getBotText("cs.webhookSummary", {

@@ -130,7 +130,7 @@
     "csWebhookLogs.channelInvalid": "CREW_LOG_CHANNEL_ID peker ikke på en tekstkanal i denne serveren.",
     "csWebhookLogs.permissions": "Boten trenger View Channel og Read Message History i Crew-loggkanalen.",
     "csWebhookLogs.title": "Siste CS-webhook-oppsummeringer:",
-    "csWebhookLogs.empty": "Ingen CS-webhook-oppsummeringer finnes blant de siste 1 000 Crew-loggmeldingene.",
+    "csWebhookLogs.empty": "Ingen CS-webhook-hendelser finnes blant de siste 1 000 Crew-loggmeldingene.",
     "csWebhookLogs.failed": "Kunne ikke hente CS-webhook-loggen.",
     "csMaxBitrate.notConfigured": "CS_CATEGORY_ID og CREW_ROLE_ID må være konfigurert.",
     "csMaxBitrate.crewOnly": "Bare Crew og høyere kan endre bitrate i CS-kategorien.",
@@ -374,6 +374,7 @@
     "cs.roleSummary": "CS-rolletildeling ({mode}): {enrolled} påmeldte, {added} lagt til, {removed} fjernet, {missing} uten påmeldingsdata.",
     "meal.rolesSummary": "Måltidsroller synkronisert: {pulje1} i Pulje 1, {pulje2} i Pulje 2, {added} lagt til, {removed} fjernet, {missing} uten måltidsdata.",
     "cs.webhookSummary": "CS webhook {tournament} {eventType}: {planned} rom, {members} spillere i plan, {updated} flyttet, {skipped} lag utelatt, {unmatched} uten Steam-kobling, {ambiguous} tvetydige SteamID-er.",
+    "cs.webhookTestReceived": "CS webhook test: signert MAT-testevent mottatt ({eventType}); ingen kamp ble behandlet.",
     "cs.recoverySummary": "CS recovery-forhåndsvisning: {main} main-rom, {wingman} Wingman-rom, {unmatched} uten kobling.",
     "voice.channelCreated": "Vanlig midlertidig voice-kanal opprettet og eier flyttet inn.",
     "voice.channelDeleted": "Tom vanlig midlertidig voice-kanal slettet."

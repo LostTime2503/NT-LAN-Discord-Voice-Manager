@@ -14,11 +14,12 @@ function logEntry(id: string, authorId: string, content: string): CsWebhookLogEn
   return { id, author: { id: authorId }, content, createdAt: new Date("2026-10-15T12:00:00Z") };
 }
 
-test("webhook log lookup paginates beyond 100 messages and returns only bot CS summaries", async () => {
+test("webhook log lookup returns bot CS summaries and signed test-event logs", async () => {
   const firstPage = Array.from({ length: 100 }, (_, index) =>
     logEntry(`page-one-${index}`, "other-user", "ordinary crew message"));
   firstPage[0] = logEntry("not-bot-webhook", "other-user", "CS webhook Main match.ready: ignored");
   const secondPage = [
+    logEntry("test", "bot", "CS webhook test: signert MAT-testevent mottatt (match.ready); ingen kamp ble behandlet."),
     logEntry("newest", "bot", "CS webhook Wingman match.finished: 0 rooms in plan"),
     logEntry("oldest", "bot", "CS webhook Main match.ready: 2 rooms in plan")
   ];
@@ -29,7 +30,7 @@ test("webhook log lookup paginates beyond 100 messages and returns only bot CS s
   }, "bot", 8, 200);
 
   assert.deepEqual(requestedCursors, [undefined, "page-one-99"]);
-  assert.deepEqual(entries.map(message => message.id), ["oldest", "newest"]);
+  assert.deepEqual(entries.map(message => message.id), ["oldest", "newest", "test"]);
 });
 
 test("webhook log lookup stops at the configured scan limit", async () => {

@@ -341,6 +341,7 @@ test("runtime stop waits for in-flight webhook processing before it returns", as
 test("webhook diagnostics report local health and only count a signed MAT test event", async () => {
   const directory = await mkdtemp(join(tmpdir(), "cs-webhook-diagnostics-"));
   const store = new CsEventStore(join(directory, "events.json"));
+  const testEvents: string[] = [];
   const runtime = new CsWebhookRuntime({
     secret,
     port: 0,
@@ -348,6 +349,7 @@ test("webhook diagnostics report local health and only count a signed MAT test e
     intervalMs: 60_000,
     registration: { getParticipants: async () => new Map() },
     store,
+    onTestEvent: eventType => testEvents.push(eventType),
     report: () => undefined
   });
 
@@ -381,6 +383,7 @@ test("webhook diagnostics report local health and only count a signed MAT test e
     assert.equal(received.lastSignedRequestType, "match.ready");
     assert.ok(received.lastSignedRequestAt);
     assert.equal(received.lastTestEventAt, received.lastSignedRequestAt);
+    assert.deepEqual(testEvents, ["match.ready"]);
     assert.deepEqual(await store.getPending(), []);
   } finally {
     await runtime.stop();

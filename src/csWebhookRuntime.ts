@@ -31,6 +31,7 @@ export interface CsWebhookRuntimeOptions {
   discordManager?: CsDiscordManager;
   store?: CsEventStore;
   report?: (summary: CsWebhookDryRunReport) => void;
+  onTestEvent?: (eventType: string) => void;
 }
 
 export interface CsWebhookRuntimeDiagnostics {
@@ -185,7 +186,14 @@ export class CsWebhookRuntime {
         const receivedAt = Date.now();
         this.lastSignedRequestAt = receivedAt;
         this.lastSignedRequestType = request.type;
-        if (request.test) this.lastTestEventAt = receivedAt;
+        if (request.test) {
+          this.lastTestEventAt = receivedAt;
+          try {
+            this.options.onTestEvent?.(request.type);
+          } catch (error) {
+            console.error("CS webhook test event log failed", error);
+          }
+        }
       },
       onEvent: async event => {
         const result = await this.store.accept(event);
