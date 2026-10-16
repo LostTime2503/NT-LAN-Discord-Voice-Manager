@@ -37,10 +37,13 @@ function timeInput(id: string, time: string): TextInputBuilder {
     .setRequired(true).setMaxLength(5).setValue(time).setPlaceholder("18:00");
 }
 
-function mealReminders(id: string, selected: number[]): CheckboxGroupBuilder {
+function mealReminders(id: string, selected: number[], mentionAtServing: boolean): CheckboxGroupBuilder {
   return new CheckboxGroupBuilder().setCustomId(id)
-    .setOptions(reminderOptions.map(option => ({ ...option, default: selected.includes(Number(option.value)) })))
-    .setMinValues(0).setMaxValues(reminderOptions.length).setRequired(false);
+    .setOptions([
+      ...reminderOptions.map(option => ({ ...option, default: selected.includes(Number(option.value)) })),
+      { label: "Ping rolle ved servering", value: "mentionAtServing", default: mentionAtServing }
+    ])
+    .setMinValues(0).setMaxValues(reminderOptions.length + 1).setRequired(false);
 }
 
 export function createMealNotificationsModal(token: string, preferences: ReturnType<MealNotificationPreferencesStore["get"]>): ModalBuilder {
@@ -51,9 +54,9 @@ export function createMealNotificationsModal(token: string, preferences: ReturnT
           .setRequired(true).setMaxLength(10).setValue(preferences.lastEventDate
             ? `${preferences.lastEventDate.slice(8, 10)}.${preferences.lastEventDate.slice(5, 7)}.${preferences.lastEventDate.slice(0, 4)}` : "")),
       new LabelBuilder().setLabel("Pulje 1 · serveringstid").setTextInputComponent(timeInput("roundOneTime", preferences.times[1])),
-      new LabelBuilder().setLabel("Pulje 1 · påminnelser").setCheckboxGroupComponent(mealReminders("roundOneReminders", preferences.reminders[1])),
+      new LabelBuilder().setLabel("Pulje 1 · påminnelser").setCheckboxGroupComponent(mealReminders("roundOneReminders", preferences.reminders[1], preferences.mentionAtServing[1])),
       new LabelBuilder().setLabel("Pulje 2 · serveringstid").setTextInputComponent(timeInput("roundTwoTime", preferences.times[2])),
-      new LabelBuilder().setLabel("Pulje 2 · påminnelser").setCheckboxGroupComponent(mealReminders("roundTwoReminders", preferences.reminders[2]))
+      new LabelBuilder().setLabel("Pulje 2 · påminnelser").setCheckboxGroupComponent(mealReminders("roundTwoReminders", preferences.reminders[2], preferences.mentionAtServing[2]))
     );
 }
 
@@ -95,12 +98,19 @@ export const mealNotificationsCommand = {
       const eventDate = parseMealEventDate(interaction.fields.getTextInputValue("eventDate"));
       const roundOneTime = interaction.fields.getTextInputValue("roundOneTime").trim();
       const roundTwoTime = interaction.fields.getTextInputValue("roundTwoTime").trim();
-      const roundOneReminders = interaction.fields.getCheckboxGroup("roundOneReminders").map(Number);
-      const roundTwoReminders = interaction.fields.getCheckboxGroup("roundTwoReminders").map(Number);
+      const roundOneSelections = interaction.fields.getCheckboxGroup("roundOneReminders");
+      const roundTwoSelections = interaction.fields.getCheckboxGroup("roundTwoReminders");
+      const mentionOption = "mentionAtServing";
+      const roundOneReminders = roundOneSelections.filter(value => value !== mentionOption).map(Number);
+      const roundTwoReminders = roundTwoSelections.filter(value => value !== mentionOption).map(Number);
       const preferences = {
         lastEventDate: eventDate,
         times: { 1: roundOneTime, 2: roundTwoTime },
-        reminders: { 1: roundOneReminders, 2: roundTwoReminders }
+        reminders: { 1: roundOneReminders, 2: roundTwoReminders },
+        mentionAtServing: {
+          1: roundOneSelections.includes(mentionOption),
+          2: roundTwoSelections.includes(mentionOption)
+        }
       } as const;
       await mealNotificationPreferencesStore.save(preferences);
       const result = await mealNotificationStore.replaceEvent({
@@ -108,7 +118,8 @@ export const mealNotificationsCommand = {
         channelId: config.mealTextChannelId!,
         eventDate,
         times: { 1: roundOneTime, 2: roundTwoTime },
-        reminders: { 1: roundOneReminders, 2: roundTwoReminders }
+        reminders: { 1: roundOneReminders, 2: roundTwoReminders },
+        mentionAtServing: preferences.mentionAtServing
       });
       await interaction.reply({
         content: `Måltidsinnstillinger lagret for ${eventDate}. ${result.created} varsler planlagt, ${result.skipped} utløpte tidspunkt hoppet over. Pulje-rollene synkroniseres fortsatt fra API-et.`,

@@ -12,12 +12,14 @@ export interface MealNotification {
   eventDate: string;
   serviceTime: string;
   serviceAt: string;
+  mentionRoleAtServing?: boolean;
   reminders: MealReminder[];
 }
 
 export interface MealNotificationPreferences {
   times: Record<MealRound, string>;
   reminders: Record<MealRound, number[]>;
+  mentionAtServing: Record<MealRound, boolean>;
   lastEventDate?: string;
 }
 
@@ -49,6 +51,7 @@ function validNotification(value: unknown): value is MealNotification {
     && (value.pulje === 1 || value.pulje === 2)
     && validDate(value.eventDate) && validTime(value.serviceTime)
     && typeof value.serviceAt === "string" && Number.isFinite(Date.parse(value.serviceAt))
+    && (value.mentionRoleAtServing === undefined || typeof value.mentionRoleAtServing === "boolean")
     && Array.isArray(value.reminders) && value.reminders.every(reminder => isRecord(reminder)
       && typeof reminder.minutesBefore === "number" && allowedOffsets.has(reminder.minutesBefore)
       && typeof reminder.sent === "boolean");
@@ -87,6 +90,7 @@ export class MealNotificationStore {
     eventDate: string;
     times: Record<MealRound, string>;
     reminders: Record<MealRound, number[]>;
+    mentionAtServing?: Record<MealRound, boolean>;
   }): Promise<{ created: number; skipped: number }> {
     this.assertLoaded();
     if (!snowflakePattern.test(input.guildId) || !snowflakePattern.test(input.channelId) || !validDate(input.eventDate)
@@ -111,6 +115,7 @@ export class MealNotificationStore {
         eventDate: input.eventDate,
         serviceTime: input.times[pulje],
         serviceAt: new Date(serviceAt).toISOString(),
+        mentionRoleAtServing: input.mentionAtServing?.[pulje] ?? true,
         reminders: futureReminders
       });
       created += futureReminders.length;
@@ -186,7 +191,8 @@ export function parseMealEventDate(value: string): string {
 export class MealNotificationPreferencesStore {
   private preferences: MealNotificationPreferences = {
     times: { ...defaultTimes },
-    reminders: { 1: [...defaultReminders[1]], 2: [...defaultReminders[2]] }
+    reminders: { 1: [...defaultReminders[1]], 2: [...defaultReminders[2]] },
+    mentionAtServing: { 1: true, 2: true }
   };
   private loaded = false;
   private writeQueue: Promise<void> = Promise.resolve();
@@ -218,6 +224,12 @@ export class MealNotificationPreferencesStore {
         if (typeof rawReminders.lastEventDate === "string" && validDate(rawReminders.lastEventDate)) {
           this.lastEventDate = rawReminders.lastEventDate;
         }
+        if (isRecord(rawReminders.mentionAtServing)) {
+          for (const pulje of [1, 2] as const) {
+            const value = rawReminders.mentionAtServing[String(pulje)];
+            if (typeof value === "boolean") this.preferences.mentionAtServing[pulje] = value;
+          }
+        }
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("Meal reminder settings could not be loaded.");
@@ -230,7 +242,8 @@ export class MealNotificationPreferencesStore {
     return {
       ...(this.lastEventDate ? { lastEventDate: this.lastEventDate } : {}),
       times: { ...this.preferences.times },
-      reminders: { 1: [...this.preferences.reminders[1]], 2: [...this.preferences.reminders[2]] }
+      reminders: { 1: [...this.preferences.reminders[1]], 2: [...this.preferences.reminders[2]] },
+      mentionAtServing: { ...this.preferences.mentionAtServing }
     };
   }
 
@@ -246,12 +259,14 @@ export class MealNotificationPreferencesStore {
       reminders: {
         1: [...new Set(input.reminders[1].filter(offset => allowedOffsets.has(offset)))].sort((a, b) => b - a),
         2: [...new Set(input.reminders[2].filter(offset => allowedOffsets.has(offset)))].sort((a, b) => b - a)
-      }
+      },
+      mentionAtServing: { ...input.mentionAtServing }
     };
     this.lastEventDate = input.lastEventDate;
     const timesSnapshot = JSON.stringify({ "1": this.preferences.times[1], "2": this.preferences.times[2] });
     const remindersSnapshot = JSON.stringify({
       "1": this.preferences.reminders[1], "2": this.preferences.reminders[2],
+      mentionAtServing: { "1": this.preferences.mentionAtServing[1], "2": this.preferences.mentionAtServing[2] },
       ...(this.lastEventDate ? { lastEventDate: this.lastEventDate } : {})
     });
     const task = this.writeQueue.catch(() => undefined).then(async () => {
@@ -330,13 +345,17 @@ export class MealNotificationScheduler {
       const channel = await guild.channels.fetch(this.mealTextChannelId);
       if (!channel || channel.guildId !== this.guildId || !("send" in channel)) return;
       const roleId = schedule.pulje === 1 ? this.roundOneRoleId : this.roundTwoRoleId;
+      const mentionRole = minutesBefore !== 0 || schedule.mentionRoleAtServing !== false;
       const templates = this.getTemplates();
       const template = minutesBefore === 0 ? templates.atServing : templates.reminder;
       const message = template
         .replace(/\{pulje\}/g, String(schedule.pulje))
         .replace(/\{time\}/g, schedule.serviceTime)
         .replace(/\{minutes\}/g, String(minutesBefore));
-      await channel.send({ content: `<@&${roleId}>\n${message}`, allowedMentions: { parse: [], roles: [roleId] } });
+      await channel.send({
+        content: `${mentionRole ? `<@&${roleId}>\n` : ""}${message}`,
+        allowedMentions: { parse: [], roles: mentionRole ? [roleId] : [] }
+      });
       console.info("Meal reminder sent", { pulje: schedule.pulje, minutesBefore });
     } catch {
       console.error("Meal reminder send failed", { pulje: schedule.pulje });
