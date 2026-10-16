@@ -34,7 +34,8 @@ export interface CsWebhookRuntimeOptions {
   report?: (summary: CsWebhookDryRunReport) => void;
   onTestEvent?: (eventType: string) => void;
   onEventReceived?: (eventType: string) => void;
-  onEventIgnored?: (eventType: string) => void;
+  onEventIgnored?: (eventType: string, reason: string) => void;
+  onTerminalCleanup?: (eventType: string, releasedAssignments: number | null) => void;
 }
 
 export interface CsWebhookRuntimeDiagnostics {
@@ -258,27 +259,27 @@ export class CsWebhookRuntime {
   private async drainPending(): Promise<void> {
     try {
       for (const event of await this.store.getPending()) {
-        if (!event.match.tournamentId && terminalWebhookEventTypes.has(event.type)) {
-          const released = this.options.discordManager
-            ? await this.options.discordManager.releaseWingmanMatchWithoutTournament(event.match.slug)
-            : 0;
-          if (released === null) {
-            console.warn("CS terminal webhook event was ambiguous without a tournament ID; no Wingman assignments were changed.");
-          } else if (released > 0) {
-            console.log("CS terminal webhook event released Wingman assignments", {
-              eventType: event.type,
-              releasedAssignments: released
-            });
-          }
-          await this.store.markProcessed(event.id);
-          continue;
-        }
         const resolution = await this.tournamentFor(event);
         if (!resolution) {
-          try {
-            this.options.onEventIgnored?.(event.type);
-          } catch (error) {
-            console.error("CS webhook ignored-event log failed", error);
+          if (terminalWebhookEventTypes.has(event.type)) {
+            const released = this.options.discordManager
+              ? await this.options.discordManager.releaseWingmanMatchWithoutTournament(event.match.slug)
+              : 0;
+            try {
+              this.options.onTerminalCleanup?.(event.type, released);
+            } catch (error) {
+              console.error("CS terminal webhook cleanup log failed", error);
+            }
+          } else {
+            const roster = `${event.match.team1?.steamIds.length ?? 0}v${event.match.team2?.steamIds.length ?? 0}`;
+            const reason = isCsRoomAssignmentEvent(event.type)
+              ? `turnering ikke aktiv og roster ${roster} støttes ikke (krever 5v5 eller 2v2)`
+              : "ingen aktiv Main/Wingman-turnering matchet tournament-ID";
+            try {
+              this.options.onEventIgnored?.(event.type, reason);
+            } catch (error) {
+              console.error("CS webhook ignored-event log failed", error);
+            }
           }
           await this.store.markProcessed(event.id);
           continue;

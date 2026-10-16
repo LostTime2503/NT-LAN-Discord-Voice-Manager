@@ -237,7 +237,7 @@ test("webhook ACK follows durable acceptance without waiting for MAT discovery",
   const delayedDiscovery = new Promise<MatTournament[]>(resolve => { releaseDiscovery = resolve; });
   const store = new CsEventStore(join(directory, "events.json"));
   const receivedEvents: string[] = [];
-  const ignoredEvents: string[] = [];
+  const ignoredEvents: Array<{ eventType: string; reason: string }> = [];
   const runtime = new CsWebhookRuntime({
     secret,
     port: 0,
@@ -253,7 +253,7 @@ test("webhook ACK follows durable acceptance without waiting for MAT discovery",
     registration: { getParticipants: async () => new Map() },
     store,
     onEventReceived: eventType => receivedEvents.push(eventType),
-    onEventIgnored: eventType => ignoredEvents.push(eventType),
+    onEventIgnored: (eventType, reason) => ignoredEvents.push({ eventType, reason }),
     report: () => undefined
   });
 
@@ -278,14 +278,17 @@ test("webhook ACK follows durable acceptance without waiting for MAT discovery",
     releaseDiscovery([{ id: 3, type: "single_elimination", status: "active", teamSize: 5 }]);
     await runtime.stop();
     assert.deepEqual(receivedEvents, ["match.ready"]);
-    assert.deepEqual(ignoredEvents, ["match.ready"]);
+    assert.deepEqual(ignoredEvents, [{
+      eventType: "match.ready",
+      reason: "turnering ikke aktiv og roster 1v1 støttes ikke (krever 5v5 eller 2v2)"
+    }]);
     await rm(directory, { recursive: true, force: true });
   }
 });
 
 test("refreshing MAT discovery removes tournament IDs that are no longer active", async () => {
   const directory = await mkdtemp(join(tmpdir(), "cs-webhook-stale-scope-"));
-  const ignoredEvents: string[] = [];
+  const ignoredEvents: Array<{ eventType: string; reason: string }> = [];
   const reportedEvents: string[] = [];
   let ignoredCount = 0;
   let resolveFirstIgnored!: () => void;
@@ -308,8 +311,8 @@ test("refreshing MAT discovery removes tournament IDs that are no longer active"
     } as unknown as MatClient,
     registration: { getParticipants: async () => new Map() },
     store: new CsEventStore(join(directory, "events.json")),
-    onEventIgnored: eventType => {
-      ignoredEvents.push(eventType);
+    onEventIgnored: (eventType, reason) => {
+      ignoredEvents.push({ eventType, reason });
       ignoredCount += 1;
       if (ignoredCount === 1) resolveFirstIgnored();
       if (ignoredCount === 2) resolveSecondIgnored();
@@ -334,7 +337,10 @@ test("refreshing MAT discovery removes tournament IDs that are no longer active"
       assert.equal(response.status, 202);
       await ignored;
     }
-    assert.deepEqual(ignoredEvents, ["match.ready", "match.ready"]);
+    assert.deepEqual(ignoredEvents, [
+      { eventType: "match.ready", reason: "turnering ikke aktiv og roster 1v1 støttes ikke (krever 5v5 eller 2v2)" },
+      { eventType: "match.ready", reason: "turnering ikke aktiv og roster 1v1 støttes ikke (krever 5v5 eller 2v2)" }
+    ]);
     assert.deepEqual(reportedEvents, []);
   } finally {
     await runtime.stop();
@@ -542,11 +548,12 @@ test("webhook diagnostics report local health and only count a signed MAT test e
   }
 });
 
-test("signed match.finished without tournament metadata releases the matching Wingman assignment", async () => {
+test("signed match.finished with an inactive tournament ID releases the matching Wingman assignment", async () => {
   const directory = await mkdtemp(join(tmpdir(), "cs-webhook-finished-"));
   const roomStatePath = join(directory, "rooms.json");
   const eventStore = new CsEventStore(join(directory, "events.json"));
   const manager = new CsDiscordManager({} as unknown as CsDiscordAdapter, "111111111111111180", 5_000, roomStatePath, true);
+  const cleanupResults: Array<{ eventType: string; released: number | null }> = [];
   const participants = new Map<string, RegisteredPerson>([
     [discordOne, { name: "One", firstName: "One", steamId: steamOne }],
     [discordTwo, { name: "Two", firstName: "Two", steamId: steamTwo }],
@@ -561,6 +568,7 @@ test("signed match.finished without tournament metadata releases the matching Wi
     registration: { getParticipants: async () => new Map() },
     discordManager: manager,
     store: eventStore,
+    onTerminalCleanup: (eventType, releasedAssignments) => cleanupResults.push({ eventType, released: releasedAssignments }),
     report: () => undefined
   });
 
@@ -581,7 +589,7 @@ test("signed match.finished without tournament metadata releases the matching Wi
     const address = runtime.address;
     assert.ok(address);
     const payload = {
-      id: "finished-without-tournament",
+      id: "finished-inactive-tournament",
       type: "match.finished",
       test: false,
       data: {
@@ -591,7 +599,7 @@ test("signed match.finished without tournament metadata releases the matching Wi
           slug: "mm-cb98061b",
           status: "completed",
           game: "cs2",
-          tournament: null,
+          tournament: { id: 99, name: "Inactive tournament" },
           team1: { id: null, players: [] },
           team2: { id: null, players: [] }
         }
@@ -610,6 +618,7 @@ test("signed match.finished without tournament metadata releases the matching Wi
 
     assert.deepEqual(await manager.getAssignments(), []);
     assert.deepEqual(await eventStore.getPending(), []);
+    assert.deepEqual(cleanupResults, [{ eventType: "match.finished", released: 2 }]);
   } finally {
     await runtime.stop();
     await rm(directory, { recursive: true, force: true });

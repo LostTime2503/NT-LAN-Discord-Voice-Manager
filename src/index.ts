@@ -521,9 +521,16 @@ async function startCsVoiceSync(enabled = config.csVoiceSyncEnabled, live = !con
           console.log("CS webhook event queued", { eventType });
           void sendCrewLogMessage(client, getBotText("cs.webhookReceived", { eventType }, "logs"));
         },
-        onEventIgnored: eventType => {
-          console.warn("CS webhook event ignored; no active tournament or supported 5v5/2v2 roster", { eventType });
-          void sendCrewLogMessage(client, getBotText("cs.webhookIgnored", { eventType }, "logs"));
+        onEventIgnored: (eventType, reason) => {
+          console.warn("CS webhook event ignored", { eventType, reason });
+          void sendCrewLogMessage(client, getBotText("cs.webhookIgnored", { eventType, reason }, "logs"));
+        },
+        onTerminalCleanup: (eventType, releasedAssignments) => {
+          const released = releasedAssignments === null
+            ? "match-slug tvetydig; ingen endret"
+            : String(releasedAssignments);
+          console.info("CS terminal webhook cleanup", { eventType, releasedAssignments });
+          void sendCrewLogMessage(client, getBotText("cs.webhookTerminalCleanup", { eventType, released }, "logs"));
         },
         report: summary => {
           console.log("CS webhook plan", summary);
