@@ -12,6 +12,7 @@ import type { CsDiscordManager } from "./csDiscordManager.js";
 export interface CsWebhookDryRunReport {
   eventType: string;
   tournament: "main" | "wingman";
+  tournamentSource: "api" | "roster";
   plannedRooms: number;
   plannedMembers: number;
   updatedRooms?: number;
@@ -34,7 +35,6 @@ export interface CsWebhookRuntimeOptions {
   onTestEvent?: (eventType: string) => void;
   onEventReceived?: (eventType: string) => void;
   onEventIgnored?: (eventType: string) => void;
-  onTournamentFallback?: (eventType: string, tournament: CsCompetition) => void;
 }
 
 export interface CsWebhookRuntimeDiagnostics {
@@ -290,15 +290,12 @@ export class CsWebhookRuntime {
           await this.store.markProcessed(event.id);
           continue;
         }
-        if (resolution.rosterFallback) {
-          try {
-            this.options.onTournamentFallback?.(event.type, resolution.scope);
-          } catch (error) {
-            console.error("CS webhook roster fallback log failed", error);
-          }
-        }
         try {
-          const assignmentEstablished = await this.processEvent(event, resolution.scope);
+          const assignmentEstablished = await this.processEvent(
+            event,
+            resolution.scope,
+            resolution.rosterFallback ? "roster" : "api"
+          );
           await this.store.markProcessed(event.id);
           if (roomAssignmentKey && assignmentEstablished) this.assignedRoomMatches.add(roomAssignmentKey);
         } catch {
@@ -359,7 +356,11 @@ export class CsWebhookRuntime {
       : this.options.registration.getParticipants();
   }
 
-  private async processEvent(event: MatWebhookEvent, tournament: "main" | "wingman"): Promise<boolean> {
+  private async processEvent(
+    event: MatWebhookEvent,
+    tournament: "main" | "wingman",
+    tournamentSource: "api" | "roster"
+  ): Promise<boolean> {
     if (this.options.discordManager) {
       const participants = isCsRoomAssignmentEvent(event.type)
         ? await this.getCsParticipants()
@@ -373,6 +374,7 @@ export class CsWebhookRuntime {
       this.report({
         eventType: event.type,
         tournament,
+        tournamentSource,
         plannedRooms: summary.plannedRooms,
         plannedMembers: summary.plannedMembers ?? 0,
         updatedRooms: summary.updatedRooms,
@@ -383,7 +385,7 @@ export class CsWebhookRuntime {
       return isCsRoomAssignmentEvent(event.type) && (summary.plannedMembers ?? 0) > 0 && summary.skippedTeams === 0;
     }
     if (!isCsRoomAssignmentEvent(event.type)) {
-      this.report({ eventType: event.type, tournament, plannedRooms: 0, plannedMembers: 0, updatedRooms: 0, skippedTeams: 0, unmatchedPlayers: 0, ambiguousSteamIds: 0 });
+      this.report({ eventType: event.type, tournament, tournamentSource, plannedRooms: 0, plannedMembers: 0, updatedRooms: 0, skippedTeams: 0, unmatchedPlayers: 0, ambiguousSteamIds: 0 });
       return false;
     }
     const participants = await this.getCsParticipants();
@@ -399,6 +401,7 @@ export class CsWebhookRuntime {
     this.report({
       eventType: event.type,
       tournament,
+      tournamentSource,
       plannedRooms: plan.rooms.length,
       plannedMembers: new Set(plan.rooms.flatMap(room => room.memberIds)).size,
       updatedRooms: 0,

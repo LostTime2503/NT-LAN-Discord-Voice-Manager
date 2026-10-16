@@ -351,7 +351,6 @@ test("unknown MAT tournament IDs classify complete 5v5 and 2v2 room-start roster
     { name: `Private Player ${index + 1}`, firstName: `Player ${index + 1}`, steamId }
   ]));
   const reports: CsWebhookDryRunReport[] = [];
-  const fallbacks: Array<{ eventType: string; tournament: string }> = [];
   const store = new CsEventStore(join(directory, "events.json"));
   const runtime = new CsWebhookRuntime({
     secret,
@@ -361,7 +360,6 @@ test("unknown MAT tournament IDs classify complete 5v5 and 2v2 room-start roster
     mat: { getTournaments: async () => [] } as unknown as MatClient,
     registration: { getParticipants: async () => participants, getCsParticipants: async () => participants },
     store,
-    onTournamentFallback: (eventType, tournament) => fallbacks.push({ eventType, tournament }),
     report: summary => reports.push(summary)
   });
 
@@ -420,13 +418,9 @@ test("unknown MAT tournament IDs classify complete 5v5 and 2v2 room-start roster
     await sendEvent({ eventType: "match.map_started", id: "main-map", matchId: 42, sequence: 2, teamSize: 5, nullTeamIds: true });
     await sendEvent({ eventType: "match.score_updated", id: "wingman-score", matchId: 43, sequence: 1, teamSize: 2, nullTeamIds: true });
 
-    assert.deepEqual(fallbacks, [
-      { eventType: "match.score_updated", tournament: "main" },
-      { eventType: "match.score_updated", tournament: "wingman" }
-    ]);
-    assert.deepEqual(reports.map(report => [report.eventType, report.tournament, report.plannedRooms, report.plannedMembers]), [
-      ["match.score_updated", "main", 2, 10],
-      ["match.score_updated", "wingman", 2, 4]
+    assert.deepEqual(reports.map(report => [report.eventType, report.tournament, report.tournamentSource, report.plannedRooms, report.plannedMembers]), [
+      ["match.score_updated", "main", "roster", 2, 10],
+      ["match.score_updated", "wingman", "roster", 2, 4]
     ]);
   } finally {
     await runtime.stop();
