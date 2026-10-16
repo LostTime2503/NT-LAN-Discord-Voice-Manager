@@ -3,7 +3,7 @@ import type { MatWebhookEvent } from "./csWebhookServer.js";
 import { CsEventStore } from "./csEventStore.js";
 import type { MatBracketSummary, MatClient, MatMatchSnapshot, MatTeam } from "./matClient.js";
 import { planCsTeamRooms } from "./csTournamentSync.js";
-import { classifyCsTournament, discoverActiveCsTournaments } from "./csTournamentDiscovery.js";
+import { classifyCsTournament, discoverActiveCsTournaments, type CsCompetition } from "./csTournamentDiscovery.js";
 import type { CsRegistrationSource } from "./csSyncRuntime.js";
 import type { RegisteredPerson } from "./registrationClient.js";
 import type { AddressInfo } from "node:net";
@@ -34,6 +34,7 @@ export interface CsWebhookRuntimeOptions {
   onTestEvent?: (eventType: string) => void;
   onEventReceived?: (eventType: string) => void;
   onEventIgnored?: (eventType: string) => void;
+  onTournamentFallback?: (eventType: string, tournament: CsCompetition) => void;
 }
 
 export interface CsWebhookRuntimeDiagnostics {
@@ -272,8 +273,8 @@ export class CsWebhookRuntime {
           await this.store.markProcessed(event.id);
           continue;
         }
-        const tournament = await this.tournamentFor(event);
-        if (!tournament) {
+        const resolution = await this.tournamentFor(event);
+        if (!resolution) {
           try {
             this.options.onEventIgnored?.(event.type);
           } catch (error) {
@@ -289,8 +290,15 @@ export class CsWebhookRuntime {
           await this.store.markProcessed(event.id);
           continue;
         }
+        if (resolution.rosterFallback) {
+          try {
+            this.options.onTournamentFallback?.(event.type, resolution.scope);
+          } catch (error) {
+            console.error("CS webhook roster fallback log failed", error);
+          }
+        }
         try {
-          const assignmentEstablished = await this.processEvent(event, tournament);
+          const assignmentEstablished = await this.processEvent(event, resolution.scope);
           await this.store.markProcessed(event.id);
           if (roomAssignmentKey && assignmentEstablished) this.assignedRoomMatches.add(roomAssignmentKey);
         } catch {
@@ -303,13 +311,22 @@ export class CsWebhookRuntime {
     }
   }
 
-  private async tournamentFor(event: MatWebhookEvent): Promise<"main" | "wingman" | null> {
+  private async tournamentFor(event: MatWebhookEvent): Promise<{
+    scope: CsCompetition;
+    rosterFallback: boolean;
+  } | null> {
     let scope = this.tournamentScopes.get(event.match.tournamentId);
     if (!scope && this.options.mat) {
       await this.refreshTournamentDiscovery();
       scope = this.tournamentScopes.get(event.match.tournamentId);
     }
-    return scope ?? null;
+    if (scope) return { scope, rosterFallback: false };
+    if (!isCsRoomAssignmentEvent(event.type)) return null;
+    const teamOneSize = event.match.team1?.steamIds.length;
+    const teamTwoSize = event.match.team2?.steamIds.length;
+    if (teamOneSize === 5 && teamTwoSize === 5) return { scope: "main", rosterFallback: true };
+    if (teamOneSize === 2 && teamTwoSize === 2) return { scope: "wingman", rosterFallback: true };
+    return null;
   }
 
   private async refreshTournamentDiscovery(): Promise<void> {

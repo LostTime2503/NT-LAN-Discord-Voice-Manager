@@ -342,6 +342,97 @@ test("refreshing MAT discovery removes tournament IDs that are no longer active"
   }
 });
 
+test("unknown MAT tournament IDs classify complete 5v5 and 2v2 room-start rosters", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "cs-webhook-roster-fallback-"));
+  const steamIds = [steamOne, steamTwo, ...Array.from({ length: 8 }, (_, index) =>
+    `765611980000000${String(index + 3).padStart(2, "0")}`)];
+  const participants = new Map<string, RegisteredPerson>(steamIds.map((steamId, index) => [
+    String(BigInt(discordOne) + BigInt(index)),
+    { name: `Private Player ${index + 1}`, firstName: `Player ${index + 1}`, steamId }
+  ]));
+  const reports: CsWebhookDryRunReport[] = [];
+  const fallbacks: Array<{ eventType: string; tournament: string }> = [];
+  const store = new CsEventStore(join(directory, "events.json"));
+  const runtime = new CsWebhookRuntime({
+    secret,
+    port: 0,
+    host: "127.0.0.1",
+    intervalMs: 60_000,
+    mat: { getTournaments: async () => [] } as unknown as MatClient,
+    registration: { getParticipants: async () => participants, getCsParticipants: async () => participants },
+    store,
+    onTournamentFallback: (eventType, tournament) => fallbacks.push({ eventType, tournament }),
+    report: summary => reports.push(summary)
+  });
+
+  try {
+    await runtime.start();
+    const address = runtime.address;
+    assert.ok(address);
+    const sendEvent = async (input: {
+      eventType: string;
+      id: string;
+      matchId: number;
+      tournamentId: number;
+      sequence: number;
+      teamSize: number;
+    }) => {
+      const makeTeam = (number: 1 | 2) => ({
+        id: `team-${input.matchId}-${number}`,
+        name: `private-team-${number}`,
+        tag: `T${number}`,
+        players: steamIds.slice((number - 1) * input.teamSize, number * input.teamSize)
+          .map(steam_id64 => ({ steam_id64, name: "private-player" }))
+      });
+      const body = Buffer.from(JSON.stringify({
+        id: input.id,
+        type: input.eventType,
+        test: false,
+        data: {
+          sequence: input.sequence,
+          match: {
+            id: input.matchId,
+            slug: `fallback-${input.matchId}`,
+            status: input.eventType === "match.live" ? "live" : "loaded",
+            game: "cs2",
+            tournament: { id: input.tournamentId },
+            team1: makeTeam(1),
+            team2: makeTeam(2)
+          }
+        }
+      }));
+      const timestamp = Math.floor(Date.now() / 1000);
+      const digest = createHmac("sha256", secret).update(`${timestamp}.`).update(body).digest("hex");
+      const response = await fetch(`http://127.0.0.1:${address.port}/webhooks/mat`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-at-signature": `t=${timestamp},v1=${digest}` },
+        body
+      });
+      assert.equal(response.status, 202);
+      for (let attempt = 0; attempt < 400 && (await store.getPending()).length; attempt += 1) {
+        await new Promise(resolve => setTimeout(resolve, 5));
+      }
+      assert.deepEqual(await store.getPending(), []);
+    };
+
+    await sendEvent({ eventType: "match.live", id: "main-live", matchId: 42, tournamentId: 7, sequence: 1, teamSize: 5 });
+    await sendEvent({ eventType: "match.map_started", id: "main-map", matchId: 42, tournamentId: 7, sequence: 2, teamSize: 5 });
+    await sendEvent({ eventType: "match.map_started", id: "wingman-map", matchId: 43, tournamentId: 8, sequence: 1, teamSize: 2 });
+
+    assert.deepEqual(fallbacks, [
+      { eventType: "match.live", tournament: "main" },
+      { eventType: "match.map_started", tournament: "wingman" }
+    ]);
+    assert.deepEqual(reports.map(report => [report.eventType, report.tournament, report.plannedRooms, report.plannedMembers]), [
+      ["match.live", "main", 2, 10],
+      ["match.map_started", "wingman", 2, 4]
+    ]);
+  } finally {
+    await runtime.stop();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("runtime stop waits for in-flight webhook processing before it returns", async () => {
   const directory = await mkdtemp(join(tmpdir(), "cs-webhook-stop-"));
   const store = new CsEventStore(join(directory, "events.json"));
