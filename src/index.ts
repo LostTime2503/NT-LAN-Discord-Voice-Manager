@@ -526,7 +526,7 @@ async function startCsVoiceSync(enabled = config.csVoiceSyncEnabled, live = !con
           void sendCrewLogMessage(client, getBotText("cs.webhookIgnored", { eventType }, "logs"));
         },
         onTournamentFallback: (eventType, tournament) => {
-          console.warn("CS webhook classified from team roster because MAT tournament was not active", { eventType, tournament });
+          console.info("CS webhook continuing with roster-based tournament fallback", { eventType, tournament });
           void sendCrewLogMessage(client, getBotText("cs.webhookScopeFallback", { eventType, tournament }, "logs"));
         },
         report: summary => {

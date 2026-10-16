@@ -352,7 +352,7 @@ const defaultLogMessages: Record<string, string> = {
   "cs.webhookTestReceived": "CS webhook test: signert MAT-testevent mottatt ({eventType}); ingen kamp ble behandlet.",
   "cs.webhookReceived": "CS webhook mottatt: {eventType}; eventet er lagret for behandling.",
   "cs.webhookIgnored": "CS webhook ignorert: {eventType}; ingen aktiv turnering eller støttet 5v5/2v2-roster kunne fastslå rutingen.",
-  "cs.webhookScopeFallback": "CS webhook {eventType}: MAT-turneringen var ikke aktiv i API-listen; klassifisert som {tournament} fra lagroster.",
+  "cs.webhookScopeFallback": "CS webhook {eventType}: Info — turnerings-ID manglet i aktiv-listen. Rosteret er godkjent som {tournament}; rutingen fortsetter.",
   "cs.webhookMoved": "CS webhook action: Flyttet en tildelt spiller til {room}.",
   "cs.recoverySummary": "CS recovery-forhåndsvisning: {main} main-rom, {wingman} Wingman-rom, {unmatched} uten kobling.",
   "voice.channelCreated": "Vanlig midlertidig voice-kanal opprettet og eier flyttet inn.",
