@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CsParticipantRoleRuntime, summarizeCsParticipantList } from "../src/csParticipantRoleRuntime.js";
+import { CsParticipantRoleRuntime, getCsEnrolledDiscordIds, summarizeCsParticipantList } from "../src/csParticipantRoleRuntime.js";
 import type { RegisteredPerson } from "../src/registrationClient.js";
 
 const enrolledId = "123456789012345678";
@@ -28,6 +28,10 @@ test("CS participant summary separates Steam links, enrollment, and missing data
     missingEnrollmentData: 2,
     manualLinks: 2
   });
+});
+
+test("CS enrolled member IDs include either Main or Wingman enrollment only", () => {
+  assert.deepEqual(getCsEnrolledDiscordIds(participants.entries()), [enrolledId, manualEnrolledId]);
 });
 
 test("role dry-run reports enrollment but performs no role mutations", async () => {

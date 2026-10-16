@@ -42,6 +42,13 @@ export function summarizeCsParticipantList(participants: Iterable<RegisteredPers
   return summary;
 }
 
+export function getCsEnrolledDiscordIds(participants: Iterable<[string, RegisteredPerson]>): string[] {
+  return [...participants]
+    .filter(([, participant]) => Array.isArray(participant.tournaments)
+      && (participant.tournaments.includes("cs2") || participant.tournaments.includes("cs2-wingman")))
+    .map(([discordId]) => discordId);
+}
+
 export interface CsRoleSyncSummary {
   participants: number;
   enrolled: number;
@@ -94,11 +101,12 @@ export class CsParticipantRoleRuntime {
         rolesRemoved: 0,
         dryRun: this.dryRun
       };
+      const enrolledDiscordIds = new Set(getCsEnrolledDiscordIds(participants.entries()));
       for (const [discordId, participant] of participants) {
         if (!Array.isArray(participant.tournaments)) {
           continue;
         }
-        const enrolled = participant.tournaments.includes("cs2") || participant.tournaments.includes("cs2-wingman");
+        const enrolled = enrolledDiscordIds.has(discordId);
         if (this.dryRun) continue;
         try {
           const changed = await this.adapter.setParticipantRole(discordId, enrolled);

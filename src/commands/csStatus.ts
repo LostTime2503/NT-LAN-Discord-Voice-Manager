@@ -5,7 +5,7 @@ import { MatClient } from "../matClient.js";
 import { manualOverrideStore } from "../manualOverrides.js";
 import { RegistrationClient } from "../registrationClient.js";
 import { getBotSettingsController } from "../botSettingsController.js";
-import { summarizeCsParticipantList } from "../csParticipantRoleRuntime.js";
+import { getCsEnrolledDiscordIds, summarizeCsParticipantList } from "../csParticipantRoleRuntime.js";
 import { getBotText } from "../messages.js";
 import { discoverActiveCsTournaments } from "../csTournamentDiscovery.js";
 
@@ -130,6 +130,34 @@ export const csStatusCommand = {
         const baseParticipants = await registration.getCsParticipants();
         const csParticipants = await manualOverrideStore.getCsParticipants(baseParticipants);
         const summary = summarizeCsParticipantList(csParticipants.values());
+        const enrolledDiscordIds = getCsEnrolledDiscordIds(csParticipants.entries());
+        let enrolledMembersOnDiscord: number | null = enrolledDiscordIds.length === 0 ? 0 : null;
+        if (enrolledDiscordIds.length > 0) {
+          try {
+            const guildMembers = await interaction.guild!.members.fetch({ user: enrolledDiscordIds });
+            enrolledMembersOnDiscord = guildMembers.size;
+          } catch {
+            enrolledMembersOnDiscord = null;
+          }
+        }
+        lines.push({
+          label: getBotText("csStatus.label.csEnrollment"),
+          result: getBotText("csStatus.result.ok") as StatusLine["result"],
+          detail: getBotText("csStatus.detail.csEnrollment", {
+            main: summary.mainEnrolled,
+            wingman: summary.wingmanEnrolled,
+            enrolled: summary.enrolled
+          })
+        });
+        lines.push({
+          label: getBotText("csStatus.label.enrolledOnDiscord"),
+          result: getBotText(enrolledMembersOnDiscord === null ? "csStatus.result.error"
+            : enrolledMembersOnDiscord === summary.enrolled ? "csStatus.result.ok" : "csStatus.result.missing") as StatusLine["result"],
+          detail: getBotText(enrolledMembersOnDiscord === null ? "csStatus.detail.discordMembershipUnavailable" : "csStatus.detail.enrolledOnDiscord", {
+            onServer: enrolledMembersOnDiscord ?? "ukjent",
+            enrolled: summary.enrolled
+          })
+        });
         lines.push({
           label: getBotText("csStatus.label.steamLinks"),
           result: getBotText(summary.steamMapped > 0 ? "csStatus.result.ok" : "csStatus.result.missing") as StatusLine["result"],
