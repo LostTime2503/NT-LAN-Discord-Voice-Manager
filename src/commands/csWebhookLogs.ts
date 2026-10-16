@@ -1,6 +1,7 @@
 import { ChannelType, MessageFlags, PermissionFlagsBits, SlashCommandBuilder, type ChatInputCommandInteraction } from "discord.js";
 import { isCrewMember } from "../accessManager.js";
 import { config } from "../config.js";
+import { fetchRecentCsWebhookLogs } from "../csWebhookLogHistory.js";
 import { getBotText } from "../messages.js";
 
 function formatLogTime(timestamp: Date): string {
@@ -47,12 +48,15 @@ export const csWebhookLogsCommand = {
         return;
       }
 
-      const messages = await channel.messages.fetch({ limit: 100 });
-      const entries = messages
-        .filter(message => message.author.id === interaction.client.user?.id
-          && message.content.startsWith("CS webhook "))
-        .first(8)
-        .reverse();
+      const botUserId = interaction.client.user?.id;
+      if (!botUserId) {
+        await interaction.editReply(getBotText("csWebhookLogs.failed"));
+        return;
+      }
+      const entries = await fetchRecentCsWebhookLogs(
+        options => channel.messages.fetch(options),
+        botUserId
+      );
       if (!entries.length) {
         await interaction.editReply(getBotText("csWebhookLogs.empty"));
         return;
