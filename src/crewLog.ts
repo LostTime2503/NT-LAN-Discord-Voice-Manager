@@ -1,10 +1,22 @@
 import { ChannelType, type Client } from "discord.js";
+import { getBotSettingsController } from "./botSettingsController.js";
 import { config } from "./config.js";
 
-export async function sendCrewLogMessage(client: Client, message: string): Promise<void> {
+export type CrewLogCategory = "general" | "website-link";
+
+export function shouldDeliverCrewLog(mode: "full" | "minimal", category: CrewLogCategory): boolean {
+  return mode === "full" || category === "website-link";
+}
+
+export async function sendCrewLogMessage(
+  client: Client,
+  message: string,
+  category: CrewLogCategory = "general"
+): Promise<void> {
   const entry = message.replace(/[\r\n]+/g, " ").slice(0, 1_800);
   console.info(`[crew-audit] ${entry}`);
-  if (!config.crewLogChannelId) {
+  const logMode = getBotSettingsController()?.getCrewLogMode() ?? "full";
+  if (!config.crewLogChannelId || !shouldDeliverCrewLog(logMode, category)) {
     return;
   }
 

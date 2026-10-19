@@ -2,7 +2,7 @@ import { MessageFlags, PermissionFlagsBits, SlashCommandBuilder, type ChatInputC
 import { isCrewMember } from "../accessManager.js";
 import { config } from "../config.js";
 import { getBotSettingsController } from "../botSettingsController.js";
-import type { BotFeature } from "../botSettings.js";
+import type { BotFeature, CrewLogMode } from "../botSettings.js";
 import { getBotText } from "../messages.js";
 
 const featureMessageKeys: Record<BotFeature, string> = {
@@ -28,6 +28,11 @@ export const botSettingsCommand = {
         { name: "CS-rolletildeling", value: "csRoles" },
         { name: "CS-voice", value: "csVoice" }
       ))
+    .addStringOption(option => option.setName("loggniva").setDescription("Velg hvor mye som postes i Crew-loggen.")
+      .addChoices(
+        { name: "Full", value: "full" },
+        { name: "Minimal (kun nettsidekoblinger)", value: "minimal" }
+      ))
     .addBooleanOption(option => option.setName("aktiv").setDescription("Skru funksjonen av eller på."))
     .addBooleanOption(option => option.setName("bekreft_live").setDescription("Bekreft live-endringer etter å ha kontrollert tørrkjøringen.")),
 
@@ -51,7 +56,8 @@ export const botSettingsCommand = {
       }
       selectedFeature = interaction.options.getString("funksjon");
       const enabled = interaction.options.getBoolean("aktiv");
-      if (selectedFeature === null && enabled === null) {
+      const logMode = interaction.options.getString("loggniva");
+      if (selectedFeature === null && enabled === null && logMode === null) {
         const settings = controller.getSettings();
         const live = controller.getLiveSettings();
         const lines = (Object.keys(featureMessageKeys) as BotFeature[]).map(feature => {
@@ -62,7 +68,22 @@ export const botSettingsCommand = {
             status: settings[feature] ? `${getBotText("botSettings.state.on")} (${mode})` : getBotText("botSettings.state.off")
           });
         });
+        lines.push(getBotText("botSettings.logModeLine", {
+          mode: getBotText(logModeKey(controller.getCrewLogMode()))
+        }));
         await interaction.editReply([getBotText("botSettings.title"), ...lines].join("\n"));
+        return;
+      }
+      if (logMode !== null) {
+        if (selectedFeature !== null || enabled !== null || interaction.options.getBoolean("bekreft_live") !== null) {
+          await interaction.editReply(getBotText("botSettings.incomplete"));
+          return;
+        }
+        const mode = logMode as CrewLogMode;
+        await controller.setCrewLogMode(mode);
+        await interaction.editReply(getBotText("botSettings.logModeChanged", {
+          mode: getBotText(logModeKey(mode))
+        }));
         return;
       }
       if (selectedFeature === null || enabled === null) {
@@ -95,3 +116,7 @@ export const botSettingsCommand = {
     }
   }
 };
+
+function logModeKey(mode: CrewLogMode): string {
+  return mode === "minimal" ? "botSettings.logMode.minimal" : "botSettings.logMode.full";
+}

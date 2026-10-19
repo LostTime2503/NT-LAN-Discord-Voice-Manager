@@ -7,11 +7,13 @@ export type BotFeatureSettings = Record<BotFeature, boolean>;
 export const liveFeatures = ["access", "csRoles", "csVoice"] as const;
 export type LiveFeature = typeof liveFeatures[number];
 export type BotLiveSettings = Record<LiveFeature, boolean>;
+export type CrewLogMode = "full" | "minimal";
 
 interface PersistedBotSettings {
   version: 1;
   features: BotFeatureSettings;
   live: BotLiveSettings;
+  crewLogMode: CrewLogMode;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -21,6 +23,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export class BotSettingsStore {
   private settings: BotFeatureSettings;
   private liveSettings: BotLiveSettings;
+  private crewLogMode: CrewLogMode = "full";
   private loaded = false;
   private writeQueue: Promise<void> = Promise.resolve();
 
@@ -39,14 +42,17 @@ export class BotSettingsStore {
       const payload: unknown = JSON.parse(await readFile(this.filePath, "utf8"));
       const features = isRecord(payload) && isRecord(payload.features) ? payload.features : undefined;
       const live = isRecord(payload) && isRecord(payload.live) ? payload.live : undefined;
+      const crewLogMode = isRecord(payload) ? payload.crewLogMode : undefined;
       if (!isRecord(payload) || payload.version !== 1 || !features || !live
         || botFeatures.some(feature => typeof features[feature] !== "boolean")
         || liveFeatures.some(feature => typeof live[feature] !== "boolean")
-        || liveFeatures.some(feature => live[feature] === true && features[feature] !== true)) {
+        || liveFeatures.some(feature => live[feature] === true && features[feature] !== true)
+        || (crewLogMode !== undefined && crewLogMode !== "full" && crewLogMode !== "minimal")) {
         throw new Error("Bot settings have invalid structure.");
       }
       this.settings = Object.fromEntries(botFeatures.map(feature => [feature, features[feature]])) as BotFeatureSettings;
       this.liveSettings = Object.fromEntries(liveFeatures.map(feature => [feature, live[feature]])) as BotLiveSettings;
+      this.crewLogMode = crewLogMode === "minimal" ? "minimal" : "full";
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("Bot settings could not be loaded.");
     }
@@ -62,6 +68,23 @@ export class BotSettingsStore {
   getLive(): BotLiveSettings {
     if (!this.loaded) throw new Error("Bot settings have not been loaded.");
     return { ...this.liveSettings };
+  }
+
+  getCrewLogMode(): CrewLogMode {
+    if (!this.loaded) throw new Error("Bot settings have not been loaded.");
+    return this.crewLogMode;
+  }
+
+  async setCrewLogMode(mode: CrewLogMode): Promise<void> {
+    await this.load();
+    const previous = this.crewLogMode;
+    this.crewLogMode = mode;
+    try {
+      await this.persist();
+    } catch (error) {
+      this.crewLogMode = previous;
+      throw error;
+    }
   }
 
   async set(feature: BotFeature, enabled: boolean): Promise<void> {
@@ -93,7 +116,12 @@ export class BotSettingsStore {
   }
 
   private persist(): Promise<void> {
-    const snapshot: PersistedBotSettings = { version: 1, features: this.getAll(), live: this.getLive() };
+    const snapshot: PersistedBotSettings = {
+      version: 1,
+      features: this.getAll(),
+      live: this.getLive(),
+      crewLogMode: this.getCrewLogMode()
+    };
     const task = this.writeQueue.catch(() => undefined).then(async () => {
       await mkdir(dirname(this.filePath), { recursive: true });
       const temporaryPath = `${this.filePath}.tmp`;

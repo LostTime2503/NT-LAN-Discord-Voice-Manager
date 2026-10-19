@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { BotSettingsStore } from "../src/botSettings.js";
 import { BotSettingsController } from "../src/botSettingsController.js";
+import { shouldDeliverCrewLog } from "../src/crewLog.js";
 
 test("bot feature settings persist across store instances and preserve other toggles", async () => {
   const directory = await mkdtemp(join(tmpdir(), "bot-settings-"));
@@ -14,14 +15,18 @@ test("bot feature settings persist across store instances and preserve other tog
       { access: true, csRoles: false, csVoice: false });
     assert.deepEqual(await first.load(), { access: true, normalVoice: true, csRoles: false, csVoice: false });
     assert.deepEqual(first.getLive(), { access: true, csRoles: false, csVoice: false });
+    assert.equal(first.getCrewLogMode(), "full");
     await first.set("csRoles", true);
     assert.deepEqual(first.getLive(), { access: true, csRoles: false, csVoice: false });
     await first.setLive("csRoles", true);
+    await first.setCrewLogMode("minimal");
     const restarted = new BotSettingsStore(path, { access: false, normalVoice: false, csRoles: false, csVoice: false });
     assert.deepEqual(await restarted.load(), { access: true, normalVoice: true, csRoles: true, csVoice: false });
     assert.deepEqual(restarted.getLive(), { access: true, csRoles: true, csVoice: false });
-    const persisted = JSON.parse(await readFile(path, "utf8")) as { version: number };
+    assert.equal(restarted.getCrewLogMode(), "minimal");
+    const persisted = JSON.parse(await readFile(path, "utf8")) as { version: number; crewLogMode: string };
     assert.equal(persisted.version, 1);
+    assert.equal(persisted.crewLogMode, "minimal");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -98,4 +103,27 @@ test("failed runtime transition restores persisted settings and previous runtime
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("older persisted settings default to full Crew logging", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "bot-settings-log-migration-"));
+  const path = join(directory, "settings.json");
+  try {
+    await (await import("node:fs/promises")).writeFile(path, JSON.stringify({
+      version: 1,
+      features: { access: false, normalVoice: false, csRoles: false, csVoice: false },
+      live: { access: false, csRoles: false, csVoice: false }
+    }));
+    const store = new BotSettingsStore(path);
+    await store.load();
+    assert.equal(store.getCrewLogMode(), "full");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("minimal Crew logging only delivers website-link notices to the channel", () => {
+  assert.equal(shouldDeliverCrewLog("minimal", "website-link"), true);
+  assert.equal(shouldDeliverCrewLog("minimal", "general"), false);
+  assert.equal(shouldDeliverCrewLog("full", "general"), true);
 });

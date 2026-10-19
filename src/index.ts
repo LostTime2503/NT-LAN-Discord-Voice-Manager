@@ -58,8 +58,10 @@ function reportAccessAction(action: AccessAuditAction): void {
     username: action.username,
     nickname: action.nickname ?? ""
   }, "logs");
-  console.info(`[crew-audit] ${entry}`);
-  void sendCrewLogMessage(client, entry);
+  const category = action.action === "website-role-granted" || action.action === "manual-role-promoted"
+    ? "website-link"
+    : "general";
+  void sendCrewLogMessage(client, entry, category);
 }
 
 // Gir en tydelig logglinje for Dockhand/Docker for prosessen dor, i stedet for a henge i ukjent tilstand.

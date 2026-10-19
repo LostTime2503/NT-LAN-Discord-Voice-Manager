@@ -1,4 +1,4 @@
-import { BotSettingsStore, type BotFeature, type BotFeatureSettings, type BotLiveSettings, type LiveFeature } from "./botSettings.js";
+import { BotSettingsStore, type BotFeature, type BotFeatureSettings, type BotLiveSettings, type CrewLogMode, type LiveFeature } from "./botSettings.js";
 
 export interface BotSettingsApplyHandler {
   (feature: BotFeature, enabled: boolean, live: boolean): Promise<void>;
@@ -23,6 +23,14 @@ export class BotSettingsController {
 
   getLiveSettings(): BotLiveSettings {
     return this.store.getLive();
+  }
+
+  getCrewLogMode(): CrewLogMode {
+    return this.store.getCrewLogMode();
+  }
+
+  async setCrewLogMode(mode: CrewLogMode): Promise<void> {
+    await this.store.setCrewLogMode(mode);
   }
 
   async setFeature(feature: BotFeature, enabled: boolean, confirmLive = false): Promise<BotSettingsResult> {
