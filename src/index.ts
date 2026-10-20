@@ -500,9 +500,11 @@ async function startCsVoiceSync(enabled = config.csVoiceSyncEnabled, live = !con
           !live,
           activity => {
             console.log("CS webhook action", activity);
-            void sendCrewLogMessage(client, getBotText("cs.webhookMoved", {
-              room: activity.roomName
-            }, "logs"));
+            const competition = getBotText(`makeTeamChats.competition.${activity.scope}`);
+            const messageKey = activity.type === "room-ready" ? "cs.webhookRoomReady"
+              : activity.type === "member-moved" ? "cs.webhookMoved" : "cs.webhookRouteSkipped";
+            const reason = activity.reason ? getBotText(`cs.webhookRouteSkip.${activity.reason}`) : "";
+            void sendCrewLogMessage(client, getBotText(messageKey, { competition, reason }, "logs"), "cs-detail");
           }
         );
       }
@@ -516,42 +518,65 @@ async function startCsVoiceSync(enabled = config.csVoiceSyncEnabled, live = !con
         discordManager: csDiscordManager,
         onTestEvent: eventType => {
           console.log("CS webhook test event received", { eventType });
-          void sendCrewLogMessage(client, getBotText("cs.webhookTestReceived", { eventType }, "logs"));
+          void sendCrewLogMessage(client, getBotText("cs.webhookTestReceived", { eventType }, "logs"), "cs-detail");
         },
-        onEventReceived: eventType => {
-          if (isCsRoomAssignmentEvent(eventType)) return;
-          console.log("CS webhook event queued", { eventType });
-          void sendCrewLogMessage(client, getBotText("cs.webhookReceived", { eventType }, "logs"));
+        onEventReceived: event => {
+          console.log("CS webhook event queued", event);
+          void sendCrewLogMessage(client, getBotText("cs.webhookReceived", {
+            eventType: event.eventType,
+            matchStatus: event.matchStatus,
+            sequence: event.sequence,
+            team1Players: event.team1Players,
+            team2Players: event.team2Players
+          }, "logs"), "cs-detail");
+        },
+        onEventRejected: (eventType, reason) => {
+          void sendCrewLogMessage(client, getBotText("cs.webhookRejected", { eventType, reason }, "logs"), "cs-detail");
         },
         onEventIgnored: (eventType, reason) => {
           console.warn("CS webhook event ignored", { eventType, reason });
-          void sendCrewLogMessage(client, getBotText("cs.webhookIgnored", { eventType, reason }, "logs"));
+          void sendCrewLogMessage(client, getBotText("cs.webhookIgnored", { eventType, reason }, "logs"), "cs-detail");
         },
         onTerminalCleanup: (eventType, releasedAssignments) => {
           const released = releasedAssignments === null
             ? "match-slug tvetydig; ingen endret"
             : String(releasedAssignments);
           console.info("CS terminal webhook cleanup", { eventType, releasedAssignments });
-          void sendCrewLogMessage(client, getBotText("cs.webhookTerminalCleanup", { eventType, released }, "logs"));
+          void sendCrewLogMessage(client, getBotText("cs.webhookTerminalCleanup", { eventType, released }, "logs"), "cs-detail");
+        },
+        onProcessingFailed: (eventType, stage, reason) => {
+          void sendCrewLogMessage(client, getBotText("cs.webhookProcessingFailed", {
+            eventType, stage, reason
+          }, "logs"), "cs-detail");
         },
         report: summary => {
           console.log("CS webhook plan", summary);
+          const noMoveReason = summary.dryRun
+            ? getBotText("cs.webhookPreviewNoMutation")
+            : summary.skippedTeams > 0
+              ? getBotText("cs.webhookTeamsSkippedReason")
+            : summary.plannedMembers > 0 && (summary.updatedRooms ?? 0) === 0
+              ? getBotText("cs.webhookNoEligibleMove") : "";
           void sendCrewLogMessage(client, getBotText("cs.webhookSummary", {
-            tournament: summary.tournament,
+            tournament: getBotText(`makeTeamChats.competition.${summary.tournament}`),
             eventType: summary.eventType,
             source: summary.tournamentSource === "roster" ? "roster fallback" : "MAT API",
+            mode: summary.dryRun ? "forhåndsvisning" : "live",
             planned: summary.plannedRooms,
             members: summary.plannedMembers,
-            updated: summary.updatedRooms ?? 0,
+            ensured: summary.roomsEnsured ?? 0,
+            moved: summary.updatedRooms ?? 0,
             skipped: summary.skippedTeams,
             unmatched: summary.unmatchedPlayers,
-            ambiguous: summary.ambiguousSteamIds
-          }, "logs"));
+            ambiguous: summary.ambiguousSteamIds,
+            noMoveReason
+          }, "logs"), "cs-summary");
         }
       });
       await csWebhookRuntime.start();
       setCsWebhookRuntime(csWebhookRuntime);
       console.log(`CS MAT webhook receiver listening on private container port ${config.csWebhookPort}.`);
+      void sendCrewLogMessage(client, getBotText("cs.webhookListening", { port: config.csWebhookPort }, "logs"), "cs-detail");
     } catch (error) {
       csWebhookRuntime = undefined;
       setCsWebhookRuntime(undefined);
@@ -576,7 +601,7 @@ async function startCsVoiceSync(enabled = config.csVoiceSyncEnabled, live = !con
             main: summary.mainTeamRoomCount,
             wingman: summary.wingmanPairRoomCount,
             unmatched: summary.unmatchedParticipantCount
-          }, "logs"));
+          }, "logs"), "cs-summary");
         }
       );
       csSyncRuntime.start();

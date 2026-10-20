@@ -31,7 +31,9 @@ export const botSettingsCommand = {
     .addStringOption(option => option.setName("loggniva").setDescription("Velg hvor mye som postes i Crew-loggen.")
       .addChoices(
         { name: "Full", value: "full" },
-        { name: "Minimal (kun nettsidekoblinger)", value: "minimal" }
+        { name: "Minimal (kun nettsidekoblinger)", value: "minimal" },
+        { name: "CS-test (kun CS-diagnostikk)", value: "cs-test" },
+        { name: "Detaljert CS + full logg", value: "detailed-cs" }
       ))
     .addBooleanOption(option => option.setName("aktiv").setDescription("Skru funksjonen av eller på."))
     .addBooleanOption(option => option.setName("bekreft_live").setDescription("Bekreft live-endringer etter å ha kontrollert tørrkjøringen.")),
@@ -118,5 +120,10 @@ export const botSettingsCommand = {
 };
 
 function logModeKey(mode: CrewLogMode): string {
-  return mode === "minimal" ? "botSettings.logMode.minimal" : "botSettings.logMode.full";
+  switch (mode) {
+    case "minimal": return "botSettings.logMode.minimal";
+    case "cs-test": return "botSettings.logMode.csTest";
+    case "detailed-cs": return "botSettings.logMode.detailedCs";
+    default: return "botSettings.logMode.full";
+  }
 }

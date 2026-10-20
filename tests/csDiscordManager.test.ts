@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { VoiceState } from "discord.js";
 import { ChannelType, type Client } from "discord.js";
 import { test } from "node:test";
-import { CsDiscordManager, type CsDiscordAdapter, type CsVoiceRoomRequest } from "../src/csDiscordManager.js";
+import { CsDiscordManager, type CsDiscordActivity, type CsDiscordAdapter, type CsVoiceRoomRequest } from "../src/csDiscordManager.js";
 import { DiscordJsCsVoiceAdapter, formatCsRoomName, getCsVoiceRoomsNeedingBitrateUpdate, ManualCsRoomDriftError } from "../src/discordCsVoiceAdapter.js";
 import type { MatBracketSummary, MatMatchSnapshot } from "../src/matClient.js";
 import type { MatWebhookEvent } from "../src/csWebhookServer.js";
@@ -173,7 +173,7 @@ test("match-ready stores team assignments and creates only the joining member's 
   const directory = await mkdtemp(join(tmpdir(), "cs-discord-manager-"));
   const path = join(directory, "rooms.json");
   const adapter = new FakeDiscordAdapter();
-  const actions: Array<{ type: string; roomName: string }> = [];
+  const actions: CsDiscordActivity[] = [];
   try {
     const manager = new CsDiscordManager(adapter, "111111111111111111", 5_000, path, false, action => actions.push(action));
     await manager.load();
@@ -183,7 +183,11 @@ test("match-ready stores team assignments and creates only the joining member's 
     assert.equal(summary.updatedRooms, 1);
     assert.deepEqual(adapter.ensured.map(room => room.key), ["main:3:team-one"]);
     assert.deepEqual(adapter.moved, [{ memberId: discordOne, channelId: "222222222222222222" }]);
-    assert.deepEqual(actions, [{ type: "member-moved", roomName: "CS ONE" }]);
+    assert.deepEqual(actions, [
+      { type: "room-ready", scope: "main" },
+      { type: "member-moved", scope: "main" },
+      { type: "route-skipped", scope: "main", reason: "not-in-source-or-category" }
+    ]);
     assert.deepEqual((await manager.getAssignments()).map(request => request.key), ["main:3:team-one", "main:3:team-two"]);
     assert.equal(await manager.getRooms().then(rooms => rooms.length), 1);
 

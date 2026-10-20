@@ -2,10 +2,16 @@ import { ChannelType, type Client } from "discord.js";
 import { getBotSettingsController } from "./botSettingsController.js";
 import { config } from "./config.js";
 
-export type CrewLogCategory = "general" | "website-link";
+export type CrewLogCategory = "general" | "website-link" | "cs-summary" | "cs-detail";
 
-export function shouldDeliverCrewLog(mode: "full" | "minimal", category: CrewLogCategory): boolean {
-  return mode === "full" || category === "website-link";
+export function shouldDeliverCrewLog(
+  mode: "full" | "minimal" | "cs-test" | "detailed-cs",
+  category: CrewLogCategory
+): boolean {
+  if (mode === "detailed-cs") return true;
+  if (mode === "full") return category !== "cs-detail";
+  if (mode === "minimal") return category === "website-link";
+  return category === "cs-summary" || category === "cs-detail";
 }
 
 export async function sendCrewLogMessage(

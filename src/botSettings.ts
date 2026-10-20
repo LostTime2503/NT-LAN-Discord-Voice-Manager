@@ -7,7 +7,7 @@ export type BotFeatureSettings = Record<BotFeature, boolean>;
 export const liveFeatures = ["access", "csRoles", "csVoice"] as const;
 export type LiveFeature = typeof liveFeatures[number];
 export type BotLiveSettings = Record<LiveFeature, boolean>;
-export type CrewLogMode = "full" | "minimal";
+export type CrewLogMode = "full" | "minimal" | "cs-test" | "detailed-cs";
 
 interface PersistedBotSettings {
   version: 1;
@@ -47,12 +47,15 @@ export class BotSettingsStore {
         || botFeatures.some(feature => typeof features[feature] !== "boolean")
         || liveFeatures.some(feature => typeof live[feature] !== "boolean")
         || liveFeatures.some(feature => live[feature] === true && features[feature] !== true)
-        || (crewLogMode !== undefined && crewLogMode !== "full" && crewLogMode !== "minimal")) {
+        || (crewLogMode !== undefined && crewLogMode !== "full" && crewLogMode !== "minimal"
+          && crewLogMode !== "cs-test" && crewLogMode !== "detailed-cs")) {
         throw new Error("Bot settings have invalid structure.");
       }
       this.settings = Object.fromEntries(botFeatures.map(feature => [feature, features[feature]])) as BotFeatureSettings;
       this.liveSettings = Object.fromEntries(liveFeatures.map(feature => [feature, live[feature]])) as BotLiveSettings;
-      this.crewLogMode = crewLogMode === "minimal" ? "minimal" : "full";
+      this.crewLogMode = crewLogMode === "minimal" || crewLogMode === "cs-test" || crewLogMode === "detailed-cs"
+        ? crewLogMode
+        : "full";
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("Bot settings could not be loaded.");
     }

@@ -46,6 +46,7 @@ interface PersistedCsRoomState {
 export interface CsDiscordSyncSummary {
   plannedRooms: number;
   plannedMembers?: number;
+  roomsEnsured?: number;
   updatedRooms: number;
   skippedTeams: number;
   unmatchedPlayers: number;
@@ -53,8 +54,10 @@ export interface CsDiscordSyncSummary {
 }
 
 export interface CsDiscordActivity {
-  type: "member-moved";
-  roomName: string;
+  type: "room-ready" | "member-moved" | "route-skipped";
+  scope: CsVoiceRoomScope;
+  reason?: "not-in-source-or-category" | "no-assignment" | "ambiguous-assignment"
+    | "room-retiring" | "manual-override" | "room-unavailable" | "move-not-completed";
 }
 
 export interface CsParticipantRoleSummary {
@@ -204,6 +207,7 @@ export class CsDiscordManager {
     }
     await this.persist();
     let updatedRooms = 0;
+    let roomsEnsured = 0;
     if (!effectiveDryRun) {
       if (event.type === "match.live") {
         for (const planned of plan.rooms) {
@@ -216,6 +220,8 @@ export class CsDiscordManager {
           const ensured = await this.ensureRoom(request, previous);
           if (!ensured.manualOverride && ensured.channelId) {
             this.rooms.set(key, { ...request, channelId: ensured.channelId });
+            roomsEnsured += 1;
+            this.reportActivitySafely({ type: "room-ready", scope });
           }
         }
         await this.persist();
@@ -223,8 +229,8 @@ export class CsDiscordManager {
       const assignedMembers = new Set(plan.rooms.flatMap(room => room.memberIds));
       for (const memberId of assignedMembers) {
         const routed = scope === "wingman"
-          ? await this.routeAssignedMemberFromCsVoice(memberId)
-          : await this.routeAssignedMemberFromLobby(memberId);
+          ? await this.routeAssignedMemberFromCsVoice(memberId, scope)
+          : await this.routeAssignedMemberFromLobby(memberId, scope);
         if (routed) updatedRooms += 1;
       }
     }
@@ -232,6 +238,7 @@ export class CsDiscordManager {
     return {
       plannedRooms: plan.rooms.length,
       plannedMembers: new Set(plan.rooms.flatMap(room => room.memberIds)).size,
+      roomsEnsured,
       updatedRooms,
       skippedTeams: plan.skippedTeamCount,
       unmatchedPlayers: plan.unmatchedParticipantCount,
@@ -374,51 +381,91 @@ export class CsDiscordManager {
     });
   }
 
-  private async routeAssignedMemberFromLobby(memberId: string): Promise<boolean> {
+  private async routeAssignedMemberFromLobby(memberId: string, diagnosticScope?: CsVoiceRoomScope): Promise<boolean> {
     return this.routeAssignedMember(
       memberId,
       () => this.adapter.canRouteMemberFromLobby(memberId, this.lobbyChannelId),
-      channelId => this.adapter.moveMemberFromSources(memberId, channelId, [this.lobbyChannelId])
+      channelId => this.adapter.moveMemberFromSources(memberId, channelId, [this.lobbyChannelId]),
+      diagnosticScope
     );
   }
 
-  private async routeAssignedMemberFromCsVoice(memberId: string): Promise<boolean> {
+  private async routeAssignedMemberFromCsVoice(memberId: string, diagnosticScope?: CsVoiceRoomScope): Promise<boolean> {
     return this.routeAssignedMember(
       memberId,
       () => this.adapter.canRouteMemberFromCsVoice(memberId, this.lobbyChannelId),
-      channelId => this.adapter.moveMemberFromCsVoice(memberId, channelId, this.lobbyChannelId)
+      channelId => this.adapter.moveMemberFromCsVoice(memberId, channelId, this.lobbyChannelId),
+      diagnosticScope
     );
   }
 
   private async routeAssignedMember(
     memberId: string,
     canRoute: () => Promise<boolean>,
-    moveMember: (channelId: string) => Promise<boolean>
+    moveMember: (channelId: string) => Promise<boolean>,
+    diagnosticScope?: CsVoiceRoomScope
   ): Promise<boolean> {
-    if (this.globallyDryRun || !await canRoute()) return false;
+    if (this.globallyDryRun) return false;
     const candidates = new Map<string, CsVoiceRoomRequest>();
     for (const [key, assignment] of this.assignments) {
       if (assignment.memberIds.includes(memberId)) candidates.set(key, assignment);
     }
-    if (candidates.size !== 1) return false;
+    if (candidates.size !== 1) {
+      if (diagnosticScope) {
+        this.reportActivitySafely({
+          type: "route-skipped",
+          scope: diagnosticScope,
+          reason: candidates.size === 0 ? "no-assignment" : "ambiguous-assignment"
+        });
+      }
+      return false;
+    }
     const request = candidates.values().next().value as CsVoiceRoomRequest | undefined;
     if (!request) return false;
+    if (!await canRoute()) {
+      if (diagnosticScope) this.reportActivitySafely({
+        type: "route-skipped", scope: request.scope, reason: "not-in-source-or-category"
+      });
+      return false;
+    }
     const previous = this.rooms.get(request.key);
-    if (previous?.retiring || previous?.manualOverride) return false;
+    if (previous?.retiring || previous?.manualOverride) {
+      if (diagnosticScope) {
+        this.reportActivitySafely({
+          type: "route-skipped",
+          scope: request.scope,
+          reason: previous.manualOverride ? "manual-override" : "room-retiring"
+        });
+      }
+      return false;
+    }
     const ensured = await this.ensureRoom(request, previous);
-    if (ensured.manualOverride || !ensured.channelId) return false;
+    if (ensured.manualOverride || !ensured.channelId) {
+      if (diagnosticScope) this.reportActivitySafely({
+        type: "route-skipped", scope: request.scope,
+        reason: ensured.manualOverride ? "manual-override" : "room-unavailable"
+      });
+      return false;
+    }
     const channelId = ensured.channelId;
     this.rooms.set(request.key, { ...request, channelId });
     await this.persist();
+    if (!previous) this.reportActivitySafely({ type: "room-ready", scope: request.scope });
     const moved = await moveMember(channelId);
     if (moved) {
-      try {
-        this.reportActivity?.({ type: "member-moved", roomName: request.name });
-      } catch (error) {
-        console.error("CS voice activity log failed", error);
-      }
+      this.reportActivitySafely({ type: "member-moved", scope: request.scope });
+    } else if (diagnosticScope) {
+      this.reportActivitySafely({ type: "route-skipped", scope: request.scope, reason: "move-not-completed" });
     }
     return moved;
+  }
+
+  private reportActivitySafely(activity: CsDiscordActivity): void {
+    try {
+      this.reportActivity?.(activity);
+    } catch (error) {
+      console.error("CS voice activity log failed", error);
+    }
   }
 
   async getRooms(): Promise<OwnedCsRoom[]> {

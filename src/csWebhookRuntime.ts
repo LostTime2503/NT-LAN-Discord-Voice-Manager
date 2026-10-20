@@ -13,8 +13,10 @@ export interface CsWebhookDryRunReport {
   eventType: string;
   tournament: "main" | "wingman";
   tournamentSource: "api" | "roster";
+  dryRun?: boolean;
   plannedRooms: number;
   plannedMembers: number;
+  roomsEnsured?: number;
   updatedRooms?: number;
   skippedTeams: number;
   unmatchedPlayers: number;
@@ -33,9 +35,19 @@ export interface CsWebhookRuntimeOptions {
   store?: CsEventStore;
   report?: (summary: CsWebhookDryRunReport) => void;
   onTestEvent?: (eventType: string) => void;
-  onEventReceived?: (eventType: string) => void;
+  onEventReceived?: (event: CsWebhookEventSummary) => void;
+  onEventRejected?: (eventType: string, reason: string) => void;
   onEventIgnored?: (eventType: string, reason: string) => void;
   onTerminalCleanup?: (eventType: string, releasedAssignments: number | null) => void;
+  onProcessingFailed?: (eventType: string, stage: string, reason: string) => void;
+}
+
+export interface CsWebhookEventSummary {
+  eventType: string;
+  matchStatus: string;
+  sequence: number;
+  team1Players: number;
+  team2Players: number;
 }
 
 export interface CsWebhookRuntimeDiagnostics {
@@ -50,6 +62,25 @@ const terminalMatchStatuses = new Set(["completed", "cancelled", "canceled", "by
 const activeWingmanStatuses = new Set(["ready", "loaded", "live", "in_progress", "playing"]);
 const waitingWingmanStatuses = new Set(["pending", "waiting", "scheduled"]);
 const terminalWebhookEventTypes = new Set(["match.finished", "match.cancelled", "match.reset"]);
+
+function safeFailureReason(error: unknown): string {
+  const record = typeof error === "object" && error !== null ? error as { name?: unknown; code?: unknown; cause?: unknown } : undefined;
+  const code = record?.code ?? (typeof record?.cause === "object" && record.cause !== null
+    ? (record.cause as { code?: unknown }).code : undefined);
+  switch (code) {
+    case 50013: return "Discord nektet handlingen: manglende rettighet (50013).";
+    case 50001: return "Boten mangler tilgang til Discord-ressursen (50001).";
+    case 10003: return "Discord-kanalen finnes ikke lenger (10003).";
+    case 429: return "Discord ratebegrenset handlingen (429).";
+    case "ECONNREFUSED": return "Tilkobling til API eller Discord ble avvist.";
+    case "ETIMEDOUT": return "Tilkobling til API eller Discord fikk tidsavbrudd.";
+  }
+  const name = typeof record?.name === "string" && /^[A-Za-z][A-Za-z0-9_]{0,31}$/.test(record.name)
+    ? record.name : "Ukjent feiltype";
+  const safeCode = typeof code === "number" && Number.isInteger(code) ? ` (${code})`
+    : typeof code === "string" && /^[A-Z0-9_-]{1,24}$/i.test(code) ? ` (${code})` : "";
+  return `${name}${safeCode}; feildetaljer er skjult.`;
+}
 
 export function selectRecoverableWingmanMatches(bracket: MatBracketSummary): string[] | null {
   if (bracket.tournament.type !== "shuffle" || bracket.tournament.teamSize !== 2) return null;
@@ -205,11 +236,26 @@ export class CsWebhookRuntime {
         const result = await this.store.accept(event);
         if (result === "accepted") {
           try {
-            this.options.onEventReceived?.(event.type);
+            this.options.onEventReceived?.({
+              eventType: event.type,
+              matchStatus: event.match.status,
+              sequence: event.sequence,
+              team1Players: event.match.team1?.steamIds.length ?? 0,
+              team2Players: event.match.team2?.steamIds.length ?? 0
+            });
           } catch (error) {
             console.error("CS webhook receipt log failed", error);
           }
           void this.processPending();
+        } else {
+          const reason = result === "duplicate"
+            ? "duplikat event-ID; allerede kvittert tidligere"
+            : "eldre eller lik sekvensnummer; nyere event er allerede behandlet";
+          try {
+            this.options.onEventRejected?.(event.type, reason);
+          } catch (error) {
+            console.error("CS webhook rejected-event log failed", error);
+          }
         }
       }
     });
@@ -259,7 +305,13 @@ export class CsWebhookRuntime {
   private async drainPending(): Promise<void> {
     try {
       for (const event of await this.store.getPending()) {
-        const resolution = await this.tournamentFor(event);
+        let resolution: Awaited<ReturnType<CsWebhookRuntime["tournamentFor"]>>;
+        try {
+          resolution = await this.tournamentFor(event);
+        } catch (error) {
+          this.reportProcessingFailure(event.type, "turneringsoppslag", error);
+          return;
+        }
         if (!resolution) {
           if (terminalWebhookEventTypes.has(event.type)) {
             const released = this.options.discordManager
@@ -288,6 +340,11 @@ export class CsWebhookRuntime {
           ? `${event.match.tournamentId}:${event.match.id}`
           : null;
         if (roomAssignmentKey && this.assignedRoomMatches.has(roomAssignmentKey) && event.type !== "match.live") {
+          try {
+            this.options.onEventIgnored?.(event.type, "komplett plan finnes allerede for denne kampen; duplikat-plan hoppet over");
+          } catch (error) {
+            console.error("CS webhook deduplicated-event log failed", error);
+          }
           await this.store.markProcessed(event.id);
           continue;
         }
@@ -299,13 +356,23 @@ export class CsWebhookRuntime {
           );
           await this.store.markProcessed(event.id);
           if (roomAssignmentKey && assignmentEstablished) this.assignedRoomMatches.add(roomAssignmentKey);
-        } catch {
-          console.error("CS webhook dry-run processing failed; event remains queued.");
+        } catch (error) {
+          this.reportProcessingFailure(event.type, "event-behandling", error);
           return;
         }
       }
+    } catch (error) {
+      this.reportProcessingFailure("queue", "event-kø", error);
+    }
+  }
+
+  private reportProcessingFailure(eventType: string, stage: string, error: unknown): void {
+    const reason = safeFailureReason(error);
+    console.error("CS webhook processing failed; event remains queued.", { eventType, stage, reason });
+    try {
+      this.options.onProcessingFailed?.(eventType, stage, reason);
     } catch {
-      console.error("CS webhook event queue could not be processed.");
+      console.error("CS webhook failure diagnostic callback failed.");
     }
   }
 
@@ -376,8 +443,10 @@ export class CsWebhookRuntime {
         eventType: event.type,
         tournament,
         tournamentSource,
+        dryRun: this.options.dryRun ?? true,
         plannedRooms: summary.plannedRooms,
         plannedMembers: summary.plannedMembers ?? 0,
+        roomsEnsured: summary.roomsEnsured ?? 0,
         updatedRooms: summary.updatedRooms,
         skippedTeams: summary.skippedTeams,
         unmatchedPlayers: summary.unmatchedPlayers,
@@ -386,7 +455,9 @@ export class CsWebhookRuntime {
       return isCsRoomAssignmentEvent(event.type) && (summary.plannedMembers ?? 0) > 0 && summary.skippedTeams === 0;
     }
     if (!isCsRoomAssignmentEvent(event.type)) {
-      this.report({ eventType: event.type, tournament, tournamentSource, plannedRooms: 0, plannedMembers: 0, updatedRooms: 0, skippedTeams: 0, unmatchedPlayers: 0, ambiguousSteamIds: 0 });
+      this.report({ eventType: event.type, tournament, tournamentSource, dryRun: this.options.dryRun ?? true,
+        plannedRooms: 0, plannedMembers: 0, roomsEnsured: 0, updatedRooms: 0, skippedTeams: 0,
+        unmatchedPlayers: 0, ambiguousSteamIds: 0 });
       return false;
     }
     const participants = await this.getCsParticipants();
@@ -403,8 +474,10 @@ export class CsWebhookRuntime {
       eventType: event.type,
       tournament,
       tournamentSource,
+      dryRun: this.options.dryRun ?? true,
       plannedRooms: plan.rooms.length,
       plannedMembers: new Set(plan.rooms.flatMap(room => room.memberIds)).size,
+      roomsEnsured: 0,
       updatedRooms: 0,
       skippedTeams: plan.skippedTeamCount,
       unmatchedPlayers: plan.unmatchedParticipantCount,

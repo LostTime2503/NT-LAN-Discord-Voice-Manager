@@ -236,7 +236,7 @@ test("webhook ACK follows durable acceptance without waiting for MAT discovery",
   let releaseDiscovery!: (tournaments: MatTournament[]) => void;
   const delayedDiscovery = new Promise<MatTournament[]>(resolve => { releaseDiscovery = resolve; });
   const store = new CsEventStore(join(directory, "events.json"));
-  const receivedEvents: string[] = [];
+  const receivedEvents: Array<{ eventType: string; matchStatus: string; sequence: number; team1Players: number; team2Players: number }> = [];
   const ignoredEvents: Array<{ eventType: string; reason: string }> = [];
   const runtime = new CsWebhookRuntime({
     secret,
@@ -252,7 +252,7 @@ test("webhook ACK follows durable acceptance without waiting for MAT discovery",
     } as unknown as MatClient,
     registration: { getParticipants: async () => new Map() },
     store,
-    onEventReceived: eventType => receivedEvents.push(eventType),
+    onEventReceived: event => receivedEvents.push(event),
     onEventIgnored: (eventType, reason) => ignoredEvents.push({ eventType, reason }),
     report: () => undefined
   });
@@ -277,7 +277,9 @@ test("webhook ACK follows durable acceptance without waiting for MAT discovery",
   } finally {
     releaseDiscovery([{ id: 3, type: "single_elimination", status: "active", teamSize: 5 }]);
     await runtime.stop();
-    assert.deepEqual(receivedEvents, ["match.ready"]);
+    assert.deepEqual(receivedEvents, [{
+      eventType: "match.ready", matchStatus: "loaded", sequence: 1, team1Players: 1, team2Players: 1
+    }]);
     assert.deepEqual(ignoredEvents, [{
       eventType: "match.ready",
       reason: "turnering ikke aktiv og roster 1v1 støttes ikke (krever 5v5 eller 2v2)"
@@ -499,6 +501,8 @@ test("webhook diagnostics report local health and only count a signed MAT test e
   const directory = await mkdtemp(join(tmpdir(), "cs-webhook-diagnostics-"));
   const store = new CsEventStore(join(directory, "events.json"));
   const testEvents: string[] = [];
+  const realEvents: Array<{ eventType: string; matchStatus: string; sequence: number; team1Players: number; team2Players: number }> = [];
+  const rejectedEvents: string[] = [];
   const runtime = new CsWebhookRuntime({
     secret,
     port: 0,
@@ -507,6 +511,8 @@ test("webhook diagnostics report local health and only count a signed MAT test e
     registration: { getParticipants: async () => new Map() },
     store,
     onTestEvent: eventType => testEvents.push(eventType),
+    onEventReceived: event => realEvents.push(event),
+    onEventRejected: (_eventType, reason) => rejectedEvents.push(reason),
     report: () => undefined
   });
 
@@ -542,6 +548,98 @@ test("webhook diagnostics report local health and only count a signed MAT test e
     assert.equal(received.lastTestEventAt, received.lastSignedRequestAt);
     assert.deepEqual(testEvents, ["match.ready"]);
     assert.deepEqual(await store.getPending(), []);
+
+    const realEvent = signedReadyRequest(3, "real-event");
+    const realResponse = await fetch(`http://127.0.0.1:${address.port}/webhooks/mat`, {
+      method: "POST",
+      headers: realEvent.headers,
+      body: realEvent.body
+    });
+    assert.equal(realResponse.status, 202);
+    for (let attempt = 0; attempt < 200 && (await store.getPending()).length; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    const duplicateResponse = await fetch(`http://127.0.0.1:${address.port}/webhooks/mat`, {
+      method: "POST",
+      headers: realEvent.headers,
+      body: realEvent.body
+    });
+    assert.equal(duplicateResponse.status, 202);
+    assert.deepEqual(realEvents, [{
+      eventType: "match.ready", matchStatus: "loaded", sequence: 1, team1Players: 1, team2Players: 1
+    }]);
+    assert.deepEqual(rejectedEvents, ["duplikat event-ID; allerede kvittert tidligere"]);
+  } finally {
+    await runtime.stop();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("processing failures emit safe diagnostics and leave accepted events queued", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "cs-webhook-processing-error-"));
+  const store = new CsEventStore(join(directory, "events.json"));
+  const failures: Array<{ eventType: string; stage: string; reason: string }> = [];
+  const runtime = new CsWebhookRuntime({
+    secret,
+    port: 0,
+    host: "127.0.0.1",
+    intervalMs: 60_000,
+    registration: {
+      getParticipants: async () => new Map(),
+      getCsParticipants: async () => { throw new Error("private name and SteamID 76561198000000001"); }
+    },
+    store,
+    onProcessingFailed: (eventType, stage, reason) => failures.push({ eventType, stage, reason }),
+    report: () => undefined
+  });
+
+  try {
+    await runtime.start();
+    const address = runtime.address;
+    assert.ok(address);
+    const steamIds = [steamOne, steamTwo, "76561198000000003", "76561198000000004", "76561198000000005"];
+    const payload = {
+      id: "processing-error-event",
+      type: "match.ready",
+      test: false,
+      data: {
+        sequence: 1,
+        match: {
+          id: 75,
+          slug: "processing-error-match",
+          status: "loaded",
+          game: "cs2",
+          tournament: null,
+          team1: { id: "team-one", name: "private team", tag: null, players: steamIds.map(steam_id64 => ({ steam_id64 })) },
+          team2: {
+            id: "team-two", name: "private team", tag: null,
+            players: ["76561198000000006", "76561198000000007", "76561198000000008", "76561198000000009", "76561198000000010"]
+              .map(steam_id64 => ({ steam_id64 }))
+          }
+        }
+      }
+    };
+    const body = Buffer.from(JSON.stringify(payload));
+    const timestamp = Math.floor(Date.now() / 1000);
+    const digest = createHmac("sha256", secret).update(`${timestamp}.`).update(body).digest("hex");
+    const response = await fetch(`http://127.0.0.1:${address.port}/webhooks/mat`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-at-signature": `t=${timestamp},v1=${digest}` },
+      body
+    });
+    assert.equal(response.status, 202);
+    for (let attempt = 0; attempt < 200 && failures.length === 0; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+
+    assert.deepEqual(failures, [{
+      eventType: "match.ready",
+      stage: "event-behandling",
+      reason: "Error; feildetaljer er skjult."
+    }]);
+    assert.equal(JSON.stringify(failures).includes("76561198000000001"), false);
+    assert.equal(JSON.stringify(failures).includes("private name"), false);
+    assert.equal((await store.getPending()).length, 1);
   } finally {
     await runtime.stop();
     await rm(directory, { recursive: true, force: true });

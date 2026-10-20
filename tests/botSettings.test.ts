@@ -19,14 +19,14 @@ test("bot feature settings persist across store instances and preserve other tog
     await first.set("csRoles", true);
     assert.deepEqual(first.getLive(), { access: true, csRoles: false, csVoice: false });
     await first.setLive("csRoles", true);
-    await first.setCrewLogMode("minimal");
+    await first.setCrewLogMode("cs-test");
     const restarted = new BotSettingsStore(path, { access: false, normalVoice: false, csRoles: false, csVoice: false });
     assert.deepEqual(await restarted.load(), { access: true, normalVoice: true, csRoles: true, csVoice: false });
     assert.deepEqual(restarted.getLive(), { access: true, csRoles: true, csVoice: false });
-    assert.equal(restarted.getCrewLogMode(), "minimal");
+    assert.equal(restarted.getCrewLogMode(), "cs-test");
     const persisted = JSON.parse(await readFile(path, "utf8")) as { version: number; crewLogMode: string };
     assert.equal(persisted.version, 1);
-    assert.equal(persisted.crewLogMode, "minimal");
+    assert.equal(persisted.crewLogMode, "cs-test");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -122,8 +122,17 @@ test("older persisted settings default to full Crew logging", async () => {
   }
 });
 
-test("minimal Crew logging only delivers website-link notices to the channel", () => {
+test("Crew log levels filter general, website, and CS detail categories", () => {
   assert.equal(shouldDeliverCrewLog("minimal", "website-link"), true);
   assert.equal(shouldDeliverCrewLog("minimal", "general"), false);
+  assert.equal(shouldDeliverCrewLog("minimal", "cs-detail"), false);
+  assert.equal(shouldDeliverCrewLog("cs-test", "website-link"), false);
+  assert.equal(shouldDeliverCrewLog("cs-test", "general"), false);
+  assert.equal(shouldDeliverCrewLog("cs-test", "cs-summary"), true);
+  assert.equal(shouldDeliverCrewLog("cs-test", "cs-detail"), true);
   assert.equal(shouldDeliverCrewLog("full", "general"), true);
+  assert.equal(shouldDeliverCrewLog("full", "cs-summary"), true);
+  assert.equal(shouldDeliverCrewLog("full", "cs-detail"), false);
+  assert.equal(shouldDeliverCrewLog("detailed-cs", "general"), true);
+  assert.equal(shouldDeliverCrewLog("detailed-cs", "cs-detail"), true);
 });
