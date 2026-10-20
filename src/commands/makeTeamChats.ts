@@ -2,7 +2,7 @@ import { ChannelType, MessageFlags, PermissionFlagsBits, SlashCommandBuilder, ty
 import { createHash } from "node:crypto";
 import { isCrewMember } from "../accessManager.js";
 import { config } from "../config.js";
-import { createCsVoiceRoomOverwrites, formatCsRoomName } from "../discordCsVoiceAdapter.js";
+import { formatCsRoomName } from "../discordCsVoiceAdapter.js";
 import { MatClient } from "../matClient.js";
 import { manualOverrideStore } from "../manualOverrides.js";
 import { RegistrationClient } from "../registrationClient.js";
@@ -130,16 +130,9 @@ export const makeTeamChatsCommand = {
           type: ChannelType.GuildVoice,
           parent: category.id,
           bitrate: interaction.guild.maximumBitrate,
-          permissionOverwrites: createCsVoiceRoomOverwrites({
-            everyoneRoleId: interaction.guild.roles.everyone.id,
-            participantRoleId: config.csParticipantRoleId,
-            manualParticipantRoleId: config.manualCsParticipantRoleId,
-            crewRoleId: config.crewRoleId,
-            botUserId: interaction.client.user!.id,
-            memberIds: []
-          }),
           reason: "Crew manually created CS competition team room"
         });
+        await channel.lockPermissions();
         created.push(channel.id);
       }
       await sendCrewLogMessage(interaction.client, getBotText("cs.roomsCreated", {

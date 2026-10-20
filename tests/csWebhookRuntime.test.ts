@@ -161,9 +161,9 @@ test("signed room-start events produce aggregate dry-run plans", async () => {
     await sendEvent("match.live", 2, 12, "fixture-match");
     await sendEvent("match.map_started", 3, 12, "fixture-match");
     await sendEvent("match.map_started", 1, 13, "map-started-only-match");
-    assert.deepEqual(reports.map(report => report.eventType), ["match.ready", "match.map_started"]);
-    assert.deepEqual(reports.map(report => [report.plannedRooms, report.plannedMembers]), [[2, 2], [2, 2]]);
-    assert.equal(participantFetches, 2);
+    assert.deepEqual(reports.map(report => report.eventType), ["match.ready", "match.live", "match.map_started"]);
+    assert.deepEqual(reports.map(report => [report.plannedRooms, report.plannedMembers]), [[2, 2], [2, 2], [2, 2]]);
+    assert.equal(participantFetches, 3);
   } finally {
     await runtime.stop();
     await rm(directory, { recursive: true, force: true });

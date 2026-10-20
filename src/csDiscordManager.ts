@@ -134,12 +134,22 @@ export class CsDiscordManager {
     this.assertLoaded();
     const effectiveDryRun = dryRun || this.globallyDryRun;
     if (!isCsRoomAssignmentEvent(event.type)) {
-      if (scope === "wingman" && ["match.finished", "match.cancelled", "match.reset"].includes(event.type)) {
+      if (["match.finished", "match.cancelled", "match.reset"].includes(event.type)) {
+        let assignmentsChanged = false;
         for (const [key, assignment] of this.assignments) {
-          if (assignment.scope === "wingman" && assignment.tournamentId === event.match.tournamentId
-            && assignment.matchSlug === event.match.slug) this.assignments.delete(key);
+          if (assignment.scope === scope && assignment.tournamentId === event.match.tournamentId
+            && assignment.matchSlug === event.match.slug) {
+            this.assignments.delete(key);
+            assignmentsChanged = true;
+          }
         }
-        await this.persist();
+        for (const room of this.rooms.values()) {
+          if (room.scope === scope && room.tournamentId === event.match.tournamentId
+            && room.matchSlug === event.match.slug) {
+            await this.scheduleRoomDeletion(room.channelId);
+          }
+        }
+        if (assignmentsChanged) await this.persist();
       }
       return { plannedRooms: 0, updatedRooms: 0, skippedTeams: 0, unmatchedPlayers: 0, ambiguousSteamIds: 0 };
     }
@@ -195,6 +205,21 @@ export class CsDiscordManager {
     await this.persist();
     let updatedRooms = 0;
     if (!effectiveDryRun) {
+      if (event.type === "match.live") {
+        for (const planned of plan.rooms) {
+          const key = scope === "main"
+            ? `main:${event.match.tournamentId}:${planned.teamId}`
+            : `wingman:${event.match.tournamentId}:${event.match.slug}:${planned.teamId}`;
+          const request = this.assignments.get(key);
+          const previous = this.rooms.get(key);
+          if (!request || previous?.retiring || previous?.manualOverride) continue;
+          const ensured = await this.ensureRoom(request, previous);
+          if (!ensured.manualOverride && ensured.channelId) {
+            this.rooms.set(key, { ...request, channelId: ensured.channelId });
+          }
+        }
+        await this.persist();
+      }
       const assignedMembers = new Set(plan.rooms.flatMap(room => room.memberIds));
       for (const memberId of assignedMembers) {
         const routed = scope === "wingman"
@@ -214,13 +239,18 @@ export class CsDiscordManager {
     };
   }
 
-  async releaseWingmanMatchWithoutTournament(matchSlug: string): Promise<number | null> {
+  async releaseMatchWithoutTournament(matchSlug: string): Promise<number | null> {
     this.assertLoaded();
     const matches = [...this.assignments.entries()].filter(([, assignment]) =>
-      assignment.scope === "wingman" && assignment.matchSlug === matchSlug);
-    const tournamentIds = new Set(matches.map(([, assignment]) => assignment.tournamentId));
+      assignment.matchSlug === matchSlug);
+    const matchingRooms = [...this.rooms.values()].filter(room => room.matchSlug === matchSlug);
+    const tournamentIds = new Set([
+      ...matches.map(([, assignment]) => assignment.tournamentId),
+      ...matchingRooms.map(room => room.tournamentId)
+    ]);
     if (tournamentIds.size > 1) return null;
     for (const [key] of matches) this.assignments.delete(key);
+    for (const room of matchingRooms) await this.scheduleRoomDeletion(room.channelId);
     if (matches.length) await this.persist();
     return matches.length;
   }

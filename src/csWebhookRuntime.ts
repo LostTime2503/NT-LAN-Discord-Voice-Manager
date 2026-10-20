@@ -263,7 +263,7 @@ export class CsWebhookRuntime {
         if (!resolution) {
           if (terminalWebhookEventTypes.has(event.type)) {
             const released = this.options.discordManager
-              ? await this.options.discordManager.releaseWingmanMatchWithoutTournament(event.match.slug)
+              ? await this.options.discordManager.releaseMatchWithoutTournament(event.match.slug)
               : 0;
             try {
               this.options.onTerminalCleanup?.(event.type, released);
@@ -287,7 +287,7 @@ export class CsWebhookRuntime {
         const roomAssignmentKey = isCsRoomAssignmentEvent(event.type)
           ? `${event.match.tournamentId}:${event.match.id}`
           : null;
-        if (roomAssignmentKey && this.assignedRoomMatches.has(roomAssignmentKey)) {
+        if (roomAssignmentKey && this.assignedRoomMatches.has(roomAssignmentKey) && event.type !== "match.live") {
           await this.store.markProcessed(event.id);
           continue;
         }

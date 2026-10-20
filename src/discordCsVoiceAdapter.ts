@@ -2,25 +2,15 @@ import {
   ChannelType,
   DiscordAPIError,
   PermissionFlagsBits,
-  PermissionsBitField,
   type Client,
   type Guild,
   type GuildBasedChannel,
-  type OverwriteResolvable,
+  type GuildMember,
   type VoiceBasedChannel
 } from "discord.js";
 import { createHash } from "node:crypto";
 import type { CsDiscordAdapter, CsVoiceRoomRequest, CsVoiceRoomScope } from "./csDiscordManager.js";
 import { isCrewMember } from "./accessManager.js";
-
-export interface CsVoicePermissionIds {
-  everyoneRoleId: string;
-  participantRoleId: string;
-  manualParticipantRoleId: string;
-  crewRoleId: string;
-  botUserId: string;
-  memberIds: string[];
-}
 
 export function formatCsRoomName(name: string, scope: CsVoiceRoomScope, marker: string): string {
   const scopeName = scope === "wingman" ? "Wingman" : "CS";
@@ -42,18 +32,6 @@ export class ManualCsRoomDriftError extends Error {
     super(message);
     this.name = "ManualCsRoomDriftError";
   }
-}
-
-export function createCsVoiceRoomOverwrites(ids: CsVoicePermissionIds): OverwriteResolvable[] {
-  const viewAndConnect = [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect];
-  return [
-    { id: ids.everyoneRoleId, deny: viewAndConnect },
-    { id: ids.participantRoleId, allow: viewAndConnect },
-    { id: ids.manualParticipantRoleId, allow: viewAndConnect },
-    { id: ids.crewRoleId, allow: viewAndConnect },
-    { id: ids.botUserId, allow: [...viewAndConnect, PermissionFlagsBits.ManageChannels, PermissionFlagsBits.MoveMembers] },
-    ...[...new Set(ids.memberIds)].map(id => ({ id, allow: viewAndConnect }))
-  ];
 }
 
 export class DiscordJsCsVoiceAdapter implements CsDiscordAdapter {
@@ -85,14 +63,12 @@ export class DiscordJsCsVoiceAdapter implements CsDiscordAdapter {
       throw new Error("CS category, lobby, and distinct automatic/manual participant and Crew roles must exist in the configured guild.");
     }
     const everyonePermissions = category.permissionsFor(guild.roles.everyone);
-    const participantPermissions = category.permissionsFor(participantRole);
     const manualParticipantPermissions = category.permissionsFor(manualParticipantRole);
     const crewPermissions = category.permissionsFor(crewRole);
     if (everyonePermissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect])
-      || !participantPermissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect])
       || !manualParticipantPermissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect])
       || !crewPermissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect])) {
-      throw new Error("Deny ViewChannel/Connect to @everyone and allow them for automatic/manual CS participants and Crew on the category.");
+      throw new Error("Deny ViewChannel/Connect to @everyone and allow manual CS participants and Crew on the category.");
     }
     const botPermissions = botMember.permissionsIn(category);
     if (!botPermissions.has([PermissionFlagsBits.ManageChannels, PermissionFlagsBits.MoveMembers])) {
@@ -117,16 +93,6 @@ export class DiscordJsCsVoiceAdapter implements CsDiscordAdapter {
     if (!category || category.type !== ChannelType.GuildCategory) {
       throw new Error("Configured CS category is unavailable.");
     }
-    const botUserId = this.client.user?.id;
-    if (!botUserId) throw new Error("Discord bot is not ready.");
-    const permissionOverwrites = createCsVoiceRoomOverwrites({
-      everyoneRoleId: guild.roles.everyone.id,
-      participantRoleId: this.participantRoleId,
-      manualParticipantRoleId: this.manualParticipantRoleId ?? "",
-      crewRoleId: this.crewRoleId,
-      botUserId,
-      memberIds: request.memberIds
-    });
     const channelName = this.channelName(request);
 
     let channel: VoiceBasedChannel | null = null;
@@ -139,16 +105,8 @@ export class DiscordJsCsVoiceAdapter implements CsDiscordAdapter {
         if (existing.parentId !== category.id || !this.hasRoomMarker(existing.name, request)) {
           throw new ManualCsRoomDriftError("MAT-owned voice channel was moved or its ownership marker changed.");
         }
-        if (previousRequest && (!this.matchesManagedRoomName(existing.name, previousRequest)
-          || !this.hasExpectedOverwrites(existing, guild, createCsVoiceRoomOverwrites({
-            everyoneRoleId: guild.roles.everyone.id,
-            participantRoleId: this.participantRoleId,
-            manualParticipantRoleId: this.manualParticipantRoleId ?? "",
-            crewRoleId: this.crewRoleId,
-            botUserId,
-            memberIds: previousRequest.memberIds
-          })))) {
-          throw new ManualCsRoomDriftError("MAT-owned voice channel was manually changed; automatic edits are locked.");
+        if (previousRequest && !this.matchesManagedRoomName(existing.name, previousRequest)) {
+          throw new ManualCsRoomDriftError("MAT-owned voice channel was manually renamed; automatic edits are locked.");
         }
         channel = existing;
       }
@@ -165,10 +123,8 @@ export class DiscordJsCsVoiceAdapter implements CsDiscordAdapter {
         type: ChannelType.GuildVoice,
         parent: category.id,
         bitrate: guild.maximumBitrate,
-        permissionOverwrites,
         reason: "Create MAT-owned CS team voice room"
       });
-      return channel.id;
     }
 
     if (channel.name !== channelName) {
@@ -177,24 +133,10 @@ export class DiscordJsCsVoiceAdapter implements CsDiscordAdapter {
     if (channel.bitrate !== guild.maximumBitrate) {
       await channel.setBitrate(guild.maximumBitrate, "Update MAT-owned CS team room to guild maximum bitrate");
     }
-    await channel.permissionOverwrites.set(permissionOverwrites, "Sync MAT-owned CS team room access");
+    if (!channel.permissionsLocked) {
+      await channel.lockPermissions();
+    }
     return channel.id;
-  }
-
-  private hasExpectedOverwrites(channel: VoiceBasedChannel, guild: Guild, expected: OverwriteResolvable[]): boolean {
-    const signature = (id: string, type: number, allow: bigint, deny: bigint) => `${id}:${type}:${allow}:${deny}`;
-    const expectedEntries = expected.map(overwrite => {
-      const id = String(overwrite.id);
-      const type = guild.roles.cache.has(id) || id === guild.id ? 0 : 1;
-      const allow = new PermissionsBitField(overwrite.allow ?? []).bitfield;
-      const deny = new PermissionsBitField(overwrite.deny ?? []).bitfield;
-      return signature(id, type, allow, deny);
-    }).sort();
-    const actualEntries = [...channel.permissionOverwrites.cache.values()]
-      .map(overwrite => signature(overwrite.id, overwrite.type, overwrite.allow.bitfield, overwrite.deny.bitfield))
-      .sort();
-    return expectedEntries.length === actualEntries.length
-      && expectedEntries.every((entry, index) => entry === actualEntries[index]);
   }
 
   async moveMemberFromSources(memberId: string, channelId: string, allowedSourceChannelIds: string[]): Promise<boolean> {
@@ -210,7 +152,7 @@ export class DiscordJsCsVoiceAdapter implements CsDiscordAdapter {
       || Boolean(this.manualParticipantRoleId && member.roles.cache.has(this.manualParticipantRoleId))
       || member.roles.cache.has(this.crewRoleId);
     if (member.user.bot || !member.voice.channelId || !allowedSourceChannelIds.includes(member.voice.channelId)
-      || !hasCsAccess) return false;
+      || !hasCsAccess || !await this.hasCsCategoryAccess(guild, member)) return false;
     const channel = await guild.channels.fetch(channelId);
     if (!channel || channel.type !== ChannelType.GuildVoice || channel.parentId !== this.categoryId
       || !this.hasManagedRoomMarker(channel.name)) {
@@ -233,7 +175,7 @@ export class DiscordJsCsVoiceAdapter implements CsDiscordAdapter {
         || member.roles.cache.has(this.participantRoleId)
         || Boolean(this.manualParticipantRoleId && member.roles.cache.has(this.manualParticipantRoleId))
         || member.roles.cache.has(this.crewRoleId)
-        );
+        ) && await this.hasCsCategoryAccess(guild, member);
   }
 
   async canRouteMemberFromCsVoice(memberId: string, lobbyChannelId: string): Promise<boolean> {
@@ -249,10 +191,11 @@ export class DiscordJsCsVoiceAdapter implements CsDiscordAdapter {
       const source = await guild.channels.fetch(member.voice.channelId);
       if (!source || source.type !== ChannelType.GuildVoice || source.parentId !== this.categoryId) return false;
     }
-    return !shouldSyncCsParticipantRole(member, this.crewRoleId)
+    const hasCsRole = !shouldSyncCsParticipantRole(member, this.crewRoleId)
       || member.roles.cache.has(this.participantRoleId)
       || Boolean(this.manualParticipantRoleId && member.roles.cache.has(this.manualParticipantRoleId))
       || member.roles.cache.has(this.crewRoleId);
+    return hasCsRole && await this.hasCsCategoryAccess(guild, member);
   }
 
   async moveMemberFromCsVoice(memberId: string, channelId: string, lobbyChannelId: string): Promise<boolean> {
@@ -268,7 +211,8 @@ export class DiscordJsCsVoiceAdapter implements CsDiscordAdapter {
       || member.roles.cache.has(this.participantRoleId)
       || Boolean(this.manualParticipantRoleId && member.roles.cache.has(this.manualParticipantRoleId))
       || member.roles.cache.has(this.crewRoleId);
-    if (member.user.bot || !sourceChannelId || sourceChannelId === channelId || !hasCsAccess) return false;
+    if (member.user.bot || !sourceChannelId || sourceChannelId === channelId || !hasCsAccess
+      || !await this.hasCsCategoryAccess(guild, member)) return false;
     if (sourceChannelId !== lobbyChannelId) {
       const source = await guild.channels.fetch(sourceChannelId);
       if (!source || source.type !== ChannelType.GuildVoice || source.parentId !== this.categoryId) return false;
@@ -306,6 +250,12 @@ export class DiscordJsCsVoiceAdapter implements CsDiscordAdapter {
     return true;
   }
 
+  private async hasCsCategoryAccess(guild: Guild, member: GuildMember): Promise<boolean> {
+    const category = await guild.channels.fetch(this.categoryId);
+    return category?.type === ChannelType.GuildCategory
+      && Boolean(category.permissionsFor(member)?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect]));
+  }
+
   async revokeMemberFromRoom(channelId: string, memberId: string): Promise<void> {
     const guild = await this.client.guilds.fetch(this.guildId);
     const channel = await guild.channels.fetch(channelId);
@@ -320,7 +270,7 @@ export class DiscordJsCsVoiceAdapter implements CsDiscordAdapter {
     } catch {
       return;
     }
-    if (member.voice.channelId === channel.id) {
+    if (member.voice.channelId === channel.id && !await this.hasCsCategoryAccess(guild, member)) {
       const lobby = await guild.channels.fetch(this.lobbyChannelId);
       if (lobby?.type === ChannelType.GuildVoice && lobby.parentId === this.categoryId) {
         await member.voice.setChannel(lobby, "CS tournament enrollment ended");

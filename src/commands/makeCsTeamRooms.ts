@@ -2,7 +2,7 @@ import { ChannelType, MessageFlags, PermissionFlagsBits, SlashCommandBuilder, ty
 import { createHash } from "node:crypto";
 import { isCrewMember } from "../accessManager.js";
 import { config } from "../config.js";
-import { createCsVoiceRoomOverwrites, formatCsRoomName } from "../discordCsVoiceAdapter.js";
+import { formatCsRoomName } from "../discordCsVoiceAdapter.js";
 import { getBotMessages, getBotText } from "../messages.js";
 import { sendCrewLogMessage } from "../crewLog.js";
 import { consumeCommandPreview, issueCommandPreview } from "../commandPreviews.js";
@@ -90,21 +90,14 @@ export const makeCsTeamRoomsCommand = {
 
       for (const teamName of missing) {
         const marker = roomMarker(competition, teamName);
-        await interaction.guild.channels.create({
+        const channel = await interaction.guild.channels.create({
           name: formatCsRoomName(teamName, roomScope, marker),
           type: ChannelType.GuildVoice,
           parent: category.id,
           bitrate: interaction.guild.maximumBitrate,
-          permissionOverwrites: createCsVoiceRoomOverwrites({
-            everyoneRoleId: interaction.guild.roles.everyone.id,
-            participantRoleId: config.csParticipantRoleId,
-            manualParticipantRoleId: config.manualCsParticipantRoleId,
-            crewRoleId: config.crewRoleId,
-            botUserId: interaction.client.user!.id,
-            memberIds: []
-          }),
           reason: "Crew created a fixed CS team room without MAT"
         });
+        await channel.lockPermissions();
       }
       await sendCrewLogMessage(interaction.client, getBotText("cs.roomsCreated", {
         competition: competitionName,

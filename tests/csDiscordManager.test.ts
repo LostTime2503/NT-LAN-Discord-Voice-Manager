@@ -3,10 +3,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { VoiceState } from "discord.js";
-import { ChannelType, PermissionFlagsBits, type Client } from "discord.js";
+import { ChannelType, type Client } from "discord.js";
 import { test } from "node:test";
 import { CsDiscordManager, type CsDiscordAdapter, type CsVoiceRoomRequest } from "../src/csDiscordManager.js";
-import { createCsVoiceRoomOverwrites, DiscordJsCsVoiceAdapter, formatCsRoomName, getCsVoiceRoomsNeedingBitrateUpdate, ManualCsRoomDriftError } from "../src/discordCsVoiceAdapter.js";
+import { DiscordJsCsVoiceAdapter, formatCsRoomName, getCsVoiceRoomsNeedingBitrateUpdate, ManualCsRoomDriftError } from "../src/discordCsVoiceAdapter.js";
 import type { MatBracketSummary, MatMatchSnapshot } from "../src/matClient.js";
 import type { MatWebhookEvent } from "../src/csWebhookServer.js";
 import type { RegisteredPerson } from "../src/registrationClient.js";
@@ -197,6 +197,29 @@ test("match-ready stores team assignments and creates only the joining member's 
     ]);
     assert.deepEqual(adapter.ensured.map(room => room.key), ["main:3:team-one", "main:3:team-two"]);
     assert.equal(await restarted.handleVoiceStateUpdate(voiceState("111111111111111111", "123456789012345680")), false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("match.live creates every planned room even when no player is in the CS lobby", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "cs-discord-live-rooms-"));
+  const adapter = new FakeDiscordAdapter();
+  const manager = new CsDiscordManager(adapter, "111111111111111111", 5_000, join(directory, "rooms.json"), false);
+  try {
+    await manager.load();
+    const summary = await manager.handleMatchEvent(matchEvent("match.live"), "main", participants, false);
+
+    assert.equal(summary.plannedRooms, 2);
+    assert.equal(summary.updatedRooms, 0);
+    assert.deepEqual(adapter.ensured.map(room => room.key), ["main:3:team-one", "main:3:team-two"]);
+    assert.equal((await manager.getRooms()).length, 2);
+    assert.deepEqual(adapter.moved, []);
+
+    await manager.handleMatchEvent(matchEvent("match.finished"), "main", participants, false);
+    assert.equal(adapter.deleteRequests.length, 2);
+    for (const request of [...adapter.deleteRequests]) await adapter.simulateRoomDeletion(request.channelId);
+    assert.deepEqual(await manager.getRooms(), []);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -418,27 +441,152 @@ test("Wingman GET recovery restores an active assignment without Discord writes"
   }
 });
 
-test("CS team rooms allow both CS participant roles, Crew, bot, and mapped members", () => {
-  const overwrites = createCsVoiceRoomOverwrites({
-    everyoneRoleId: "111111111111111111",
-    participantRoleId: "222222222222222222",
-    manualParticipantRoleId: "222222222222222223",
-    crewRoleId: "333333333333333333",
-    botUserId: "444444444444444444",
-    memberIds: [discordOne, discordOne, discordTwo]
+test("new and reused MAT rooms lock their overwrites to the CS category", async () => {
+  const categoryId = "111111111111111111";
+  const category = { id: categoryId, type: ChannelType.GuildCategory, children: { cache: { find: () => undefined } } };
+  const room = {
+    id: "555555555555555555",
+    type: ChannelType.GuildVoice,
+    parentId: categoryId,
+    name: "",
+    bitrate: 384_000,
+    permissionsLocked: false,
+    lockCount: 0,
+    async lockPermissions() { this.permissionsLocked = true; this.lockCount += 1; },
+    async setName(name: string) { this.name = name; },
+    async setBitrate(bitrate: number) { this.bitrate = bitrate; },
+    permissionOverwrites: { cache: new Map(), async set() { throw new Error("Room-specific overwrites must not be set."); } }
+  };
+  let createOptions: Record<string, unknown> | undefined;
+  const guild = {
+    channels: {
+      fetch: async (id: string) => id === categoryId ? category : room,
+      create: async (options: Record<string, unknown>) => {
+        createOptions = options;
+        room.name = String(options.name);
+        room.parentId = String(options.parent);
+        return room;
+      }
+    }
+  };
+  const adapter = new DiscordJsCsVoiceAdapter(
+    { guilds: { fetch: async () => guild }, user: { id: "444444444444444444" } } as unknown as Client,
+    "666666666666666666",
+    categoryId,
+    "777777777777777777",
+    "222222222222222222",
+    "222222222222222223",
+    "333333333333333333"
+  );
+  const request: CsVoiceRoomRequest = {
+    key: "main:3:team-one", name: "CS Team One", scope: "main", teamId: "team-one",
+    tournamentId: "3", matchSlug: "main-match", memberIds: [discordOne]
+  };
+
+  assert.equal(await adapter.ensureRoom(request), room.id);
+  assert.ok(createOptions);
+  assert.equal("permissionOverwrites" in createOptions, false);
+  assert.equal(room.permissionsLocked, true);
+  assert.equal(room.lockCount, 1);
+
+  room.permissionsLocked = false;
+  assert.equal(await adapter.ensureRoom(request, room.id, request), room.id);
+  assert.equal(room.permissionsLocked, true);
+  assert.equal(room.lockCount, 2);
+});
+
+test("CS room routing follows effective category access, not the automatic role alone", async () => {
+  const categoryId = "111111111111111111";
+  const manualRoleId = "222222222222222223";
+  const crewRoleId = "333333333333333333";
+  const makeMember = (id: string, roleIds: string[]) => ({
+    id,
+    user: { bot: false },
+    guild: { ownerId: "888888888888888888", roles: { cache: new Map([[crewRoleId, { id: crewRoleId }]]) } },
+    permissions: { has: () => false },
+    roles: {
+      cache: { has: (roleId: string) => roleIds.includes(roleId) },
+      highest: { comparePositionTo: () => -1 }
+    },
+    voice: { channelId: "777777777777777777" }
   });
-  assert.equal(overwrites.length, 7);
-  assert.deepEqual(overwrites[0]?.deny, [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect]);
-  assert.deepEqual(overwrites[1]?.allow, [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect]);
-  assert.deepEqual(overwrites[2]?.allow, [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect]);
-  assert.deepEqual(overwrites[3]?.allow, [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect]);
-  assert.deepEqual(overwrites[4]?.allow, [
-    PermissionFlagsBits.ViewChannel,
-    PermissionFlagsBits.Connect,
-    PermissionFlagsBits.ManageChannels,
-    PermissionFlagsBits.MoveMembers
-  ]);
-  assert.deepEqual(overwrites.slice(5).map(overwrite => overwrite.id), [discordOne, discordTwo]);
+  const manualMember = makeMember(discordOne, [manualRoleId]);
+  const automaticOnlyMember = makeMember(discordTwo, ["222222222222222222"]);
+  const members = new Map([[manualMember.id, manualMember], [automaticOnlyMember.id, automaticOnlyMember]]);
+  const category = {
+    type: ChannelType.GuildCategory,
+    permissionsFor: (member: typeof manualMember) => ({
+      has: () => member.roles.cache.has(manualRoleId) || member.roles.cache.has(crewRoleId)
+    })
+  };
+  const guild = {
+    ownerId: "888888888888888888",
+    roles: { cache: new Map([[crewRoleId, { id: crewRoleId }]]) },
+    members: { fetch: async (id: string) => members.get(id) },
+    channels: { fetch: async () => category }
+  };
+  const adapter = new DiscordJsCsVoiceAdapter(
+    { guilds: { fetch: async () => guild } } as unknown as Client,
+    "666666666666666666",
+    categoryId,
+    "777777777777777777",
+    "222222222222222222",
+    manualRoleId,
+    crewRoleId
+  );
+
+  assert.equal(await adapter.canRouteMemberFromLobby(discordOne, "777777777777777777"), true);
+  assert.equal(await adapter.canRouteMemberFromLobby(discordTwo, "777777777777777777"), false);
+});
+
+test("CS enrollment cleanup preserves members who retain category access", async () => {
+  const categoryId = "111111111111111111";
+  const lobbyId = "777777777777777777";
+  const roomId = "555555555555555555";
+  const manualRoleId = "222222222222222223";
+  const makeMember = (id: string, roleIds: string[]) => ({
+    id,
+    user: { bot: false },
+    roles: { cache: { has: (roleId: string) => roleIds.includes(roleId) } },
+    voice: {
+      channelId: roomId,
+      async setChannel(channel: { id: string }) { this.channelId = channel.id; }
+    }
+  });
+  const manualMember = makeMember(discordOne, [manualRoleId]);
+  const automaticOnlyMember = makeMember(discordTwo, ["222222222222222222"]);
+  const members = new Map([[manualMember.id, manualMember], [automaticOnlyMember.id, automaticOnlyMember]]);
+  const category = {
+    type: ChannelType.GuildCategory,
+    permissionsFor: (member: typeof manualMember) => ({ has: () => member.roles.cache.has(manualRoleId) })
+  };
+  const room = {
+    id: roomId,
+    type: ChannelType.GuildVoice,
+    parentId: categoryId,
+    name: "[MAT-0123456789ab] Wingman Test",
+    permissionOverwrites: { cache: { has: () => false } }
+  };
+  const lobby = { id: lobbyId, type: ChannelType.GuildVoice, parentId: categoryId };
+  const guild = {
+    channels: { fetch: async (id: string) => id === categoryId ? category : id === roomId ? room : lobby },
+    members: { fetch: async (id: string) => members.get(id) }
+  };
+  const adapter = new DiscordJsCsVoiceAdapter(
+    { guilds: { fetch: async () => guild } } as unknown as Client,
+    "666666666666666666",
+    categoryId,
+    lobbyId,
+    "222222222222222222",
+    manualRoleId,
+    "333333333333333333"
+  );
+
+  await adapter.revokeMemberFromRoom(roomId, discordOne);
+  await adapter.revokeMemberFromRoom(roomId, discordTwo);
+
+  assert.equal(manualMember.voice.channelId, roomId);
+  assert.equal(automaticOnlyMember.voice.channelId, lobbyId);
 });
 
 test("main bracket snapshot stores every known team assignment without creating rooms", async () => {
@@ -589,7 +737,7 @@ test("cancel-all prevents the Discord adapter from deleting a room on an existin
   assert.equal(cleanupCalls, 0);
 });
 
-test("terminal event without tournament releases Wingman assignments only for a unique match slug", async () => {
+test("terminal event without tournament releases assignments only for a unique match slug", async () => {
   const directory = await mkdtemp(join(tmpdir(), "cs-terminal-match-cleanup-"));
   const adapter = new FakeDiscordAdapter();
   const manager = new CsDiscordManager(adapter, "111111111111111111", 5_000, join(directory, "rooms.json"), true);
@@ -606,7 +754,7 @@ test("terminal event without tournament releases Wingman assignments only for a 
     await manager.load();
     await manager.reconcileWingmanSnapshot("4", match, participants, true);
     assert.equal((await manager.getAssignments()).length, 2);
-    assert.equal(await manager.releaseWingmanMatchWithoutTournament(match.slug), 2);
+    assert.equal(await manager.releaseMatchWithoutTournament(match.slug), 2);
     assert.deepEqual(await manager.getAssignments(), []);
   } finally {
     await rm(directory, { recursive: true, force: true });
