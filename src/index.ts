@@ -19,7 +19,7 @@ import { CsParticipantRoleRuntime } from "./csParticipantRoleRuntime.js";
 import { loadBotMessages } from "./messages.js";
 import { BotSettingsStore, type BotFeature } from "./botSettings.js";
 import { BotSettingsController, configureBotSettingsController, getBotSettingsController } from "./botSettingsController.js";
-import { setCsWebhookRuntime } from "./csWebhookDiagnostics.js";
+import { formatCsWebhookSourceStatus, setCsWebhookRuntime } from "./csWebhookDiagnostics.js";
 import { notifyCsParticipantsCommand } from "./commands/notifyCsParticipants.js";
 import { csNotificationModalCommand, csNotificationScheduleStore } from "./commands/csNotificationModalCommand.js";
 import { CsNotificationScheduler } from "./csNotificationSchedules.js";
@@ -441,9 +441,10 @@ async function startCsVoiceSync(enabled = config.csVoiceSyncEnabled, live = !con
   await csWebhookRuntime?.stop();
   await csTestWebhookRuntime?.stop();
   csTestWebhookRuntime = undefined;
+  setCsWebhookRuntime(undefined, "test");
   csTestDiscordManager = undefined;
   csWebhookRuntime = undefined;
-  setCsWebhookRuntime(undefined);
+  setCsWebhookRuntime(undefined, "mat");
   csDiscordManager?.cancelPendingRoomDeletions();
   csDiscordManager = undefined;
   if (!enabled) {
@@ -641,7 +642,7 @@ async function startCsVoiceSync(enabled = config.csVoiceSyncEnabled, live = !con
           }
         });
         if (source === "test") csTestWebhookRuntime = runtime;
-        else { csWebhookRuntime = runtime; setCsWebhookRuntime(runtime); }
+        else csWebhookRuntime = runtime;
         receiversToStart.push({
           source,
           runtime,
@@ -655,15 +656,20 @@ async function startCsVoiceSync(enabled = config.csVoiceSyncEnabled, live = !con
       for (const receiver of receiversToStart.sort((left, right) => left.source === "test" ? -1 : right.source === "test" ? 1 : 0)) {
         try {
           await receiver.runtime.start();
+          setCsWebhookRuntime(receiver.runtime, receiver.source);
           const listeningKey = receiver.source === "test" ? "cs.webhookListening.test" : "cs.webhookListening.mat";
-          void sendCrewLogMessage(client, getBotText(listeningKey, {
-            port: receiver.port,
-            mode: getBotText(`cs.webhookMode.${receiver.getMode()}`)
-          }, "logs"), "cs-detail");
+          const status = formatCsWebhookSourceStatus({
+            configured: true,
+            featureEnabled: enabled,
+            featureLive: live,
+            mode: receiver.getMode(),
+            diagnostics: await receiver.runtime.getDiagnostics()
+          });
+          void sendCrewLogMessage(client, getBotText(listeningKey, { port: receiver.port, mode: status }, "logs"), "cs-detail");
         } catch (error) {
           if (receiver.source === "test") throw error;
           csWebhookRuntime = undefined;
-          setCsWebhookRuntime(undefined);
+          setCsWebhookRuntime(undefined, "mat");
           csDiscordManager?.cancelPendingRoomDeletions();
           console.error("MAT webhook could not start; test receiver remains available.",
             error instanceof Error ? error.name : "UnknownError");
@@ -678,8 +684,9 @@ async function startCsVoiceSync(enabled = config.csVoiceSyncEnabled, live = !con
       await csTestWebhookRuntime?.stop();
       csTestWebhookRuntime = undefined;
       csTestDiscordManager = undefined;
+      setCsWebhookRuntime(undefined, "test");
       csWebhookRuntime = undefined;
-      setCsWebhookRuntime(undefined);
+      setCsWebhookRuntime(undefined, "mat");
       csDiscordManager = undefined;
       const reason = error instanceof Error ? error.message : "ukjent oppstartsfeil";
       throw new Error(`CS MAT webhook kunne ikke starte: ${reason}`);

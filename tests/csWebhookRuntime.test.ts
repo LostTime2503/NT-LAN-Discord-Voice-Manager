@@ -17,6 +17,7 @@ import type { MatBracketSummary, MatClient, MatMatchSnapshot } from "../src/matC
 import type { RegisteredPerson } from "../src/registrationClient.js";
 import { CsDiscordManager, type CsDiscordAdapter } from "../src/csDiscordManager.js";
 import type { CsSourceMode } from "../src/botSettings.js";
+import { formatCsWebhookSourceStatus } from "../src/csWebhookDiagnostics.js";
 import type { MatTournament } from "../src/matClient.js";
 
 const secret = "synthetic-webhook-secret-with-enough-entropy";
@@ -24,6 +25,23 @@ const discordOne = "123456789012345678";
 const discordTwo = "123456789012345679";
 const steamOne = "76561198000000001";
 const steamTwo = "76561198000000002";
+
+test("CS source status distinguishes stopped, off, preview, live, and unhealthy listeners", () => {
+  assert.equal(formatCsWebhookSourceStatus({
+    configured: false, featureEnabled: true, featureLive: true, mode: "live"
+  }), "Av (mottaker ikke konfigurert)");
+  assert.equal(formatCsWebhookSourceStatus({
+    configured: true, featureEnabled: false, featureLive: false, mode: "live"
+  }), "Av (CS-voice av)");
+  assert.equal(formatCsWebhookSourceStatus({
+    configured: true, featureEnabled: true, featureLive: true, mode: "live"
+  }), "Av (mottaker lytter ikke)");
+  const listening = { listening: true, healthCheckOk: true, lastSignedRequestAt: null, lastSignedRequestType: null, lastTestEventAt: null };
+  assert.equal(formatCsWebhookSourceStatus({ configured: true, featureEnabled: true, featureLive: true, mode: "off", diagnostics: listening }), "Lytter (av behandling)");
+  assert.equal(formatCsWebhookSourceStatus({ configured: true, featureEnabled: true, featureLive: false, mode: "live", diagnostics: listening }), "Lytter (forhåndsvisning)");
+  assert.equal(formatCsWebhookSourceStatus({ configured: true, featureEnabled: true, featureLive: true, mode: "live", diagnostics: listening }), "Lytter (gjør endringer)");
+  assert.equal(formatCsWebhookSourceStatus({ configured: true, featureEnabled: true, featureLive: true, mode: "preview", diagnostics: { ...listening, healthCheckOk: false } }), "Lytter, men healthcheck feiler (forhåndsvisning)");
+});
 
 test("test sender uses isolated source, previews without assignments, and creates/cleans rooms in live mode", async () => {
   const directory = await mkdtemp(join(tmpdir(), "cs-test-source-"));

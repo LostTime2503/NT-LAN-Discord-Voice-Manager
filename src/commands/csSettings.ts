@@ -2,6 +2,7 @@ import { MessageFlags, PermissionFlagsBits, SlashCommandBuilder, type ChatInputC
 import { isCrewMember } from "../accessManager.js";
 import { config } from "../config.js";
 import { getBotSettingsController } from "../botSettingsController.js";
+import { formatCsWebhookSourceStatus, getCsWebhookDiagnostics } from "../csWebhookDiagnostics.js";
 import type { CsSourceMode, CsWebhookSource } from "../botSettings.js";
 
 const labels: Record<CsSourceMode, string> = {
@@ -57,11 +58,31 @@ export const csSettingsCommand = {
         await controller.setCsSource(source, mode, interaction.options.getBoolean("bekreft_live") ?? false);
       }
       const settings = controller.getCsSources();
+      const botSettings = controller.getSettings();
+      const liveSettings = controller.getLiveSettings();
+      const [matDiagnostics, testDiagnostics] = await Promise.all([
+        getCsWebhookDiagnostics("mat"),
+        getCsWebhookDiagnostics("test")
+      ]);
+      const matStatus = formatCsWebhookSourceStatus({
+        configured: Boolean(config.matWebhookSecret),
+        featureEnabled: botSettings.csVoice,
+        featureLive: liveSettings.csVoice,
+        mode: settings.mat,
+        diagnostics: matDiagnostics
+      });
+      const testStatus = formatCsWebhookSourceStatus({
+        configured: Boolean(config.csTestWebhookSecret),
+        featureEnabled: botSettings.csVoice,
+        featureLive: liveSettings.csVoice,
+        mode: settings.test,
+        diagnostics: testDiagnostics
+      });
       await interaction.editReply([
         "CS-kilder",
-        `MAT: ${labels[settings.mat]}`,
-        `TESTSCRIPT: ${labels[settings.test]} (${config.csTestWebhookSecret ? `port ${config.csTestWebhookPort}` : "mottaker ikke konfigurert"})`,
-        `CS-voice: ${controller.getSettings().csVoice ? controller.getLiveSettings().csVoice ? "live" : "forhåndsvisning" : "av"}`
+        `MAT: ${matStatus}`,
+        `TESTSCRIPT: ${testStatus}${config.csTestWebhookSecret ? ` (port ${config.csTestWebhookPort})` : ""}`,
+        `CS-voice: ${botSettings.csVoice ? liveSettings.csVoice ? "live" : "forhåndsvisning" : "av"}`
       ].join("\n"));
     } catch {
       await interaction.editReply("Kunne ikke endre CS-innstillingene; kontroller mottakeroppsettet i Dockhand.");
