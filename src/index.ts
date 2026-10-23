@@ -504,7 +504,13 @@ async function startCsVoiceSync(enabled = config.csVoiceSyncEnabled, live = !con
   if (config.matWebhookSecret && registration && csRegistration) {
     try {
       await manualOverrideStore.load();
-      const receiversToStart: Array<{ source: "mat" | "test"; runtime: CsWebhookRuntime; port: number; sourceLabel: string }> = [];
+      const receiversToStart: Array<{
+        source: "mat" | "test";
+        runtime: CsWebhookRuntime;
+        port: number;
+        sourceLabel: string;
+        getMode: () => "off" | "preview" | "live";
+      }> = [];
       for (const source of ["mat", "test"] as const) {
         if (source === "test" && !config.csTestWebhookSecret) continue;
         const sourceLabel = source === "test" ? "TESTSCRIPT" : "MAT";
@@ -636,7 +642,13 @@ async function startCsVoiceSync(enabled = config.csVoiceSyncEnabled, live = !con
         });
         if (source === "test") csTestWebhookRuntime = runtime;
         else { csWebhookRuntime = runtime; setCsWebhookRuntime(runtime); }
-        receiversToStart.push({ source, runtime, port: source === "test" ? config.csTestWebhookPort : config.csWebhookPort, sourceLabel });
+        receiversToStart.push({
+          source,
+          runtime,
+          port: source === "test" ? config.csTestWebhookPort : config.csWebhookPort,
+          sourceLabel,
+          getMode: sourceMode
+        });
       }
       await csDiscordManager?.load();
       await csTestDiscordManager?.load();
@@ -645,7 +657,8 @@ async function startCsVoiceSync(enabled = config.csVoiceSyncEnabled, live = !con
           await receiver.runtime.start();
           const listeningKey = receiver.source === "test" ? "cs.webhookListening.test" : "cs.webhookListening.mat";
           void sendCrewLogMessage(client, getBotText(listeningKey, {
-            port: receiver.port
+            port: receiver.port,
+            mode: getBotText(`cs.webhookMode.${receiver.getMode()}`)
           }, "logs"), "cs-detail");
         } catch (error) {
           if (receiver.source === "test") throw error;
