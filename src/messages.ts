@@ -511,7 +511,8 @@ export function getBotText(
   section: "commands" | "logs" = "commands",
   messages: BotMessages = activeMessages
 ): string {
-  const template = messages[section][key];
+  const template = messages[section][key]
+    ?? (section === "logs" ? defaultLogMessages[key] : defaultCommandMessages[key]);
   if (!template) return `[${key}]`;
   return template.replace(/\{([A-Za-z0-9_]+)\}/g, (_match, name: string) => String(values[name] ?? ""));
 }

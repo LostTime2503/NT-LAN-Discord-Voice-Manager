@@ -353,6 +353,20 @@ test("command and audit messages are editable from the message catalog with plac
   assert.ok(getBotText("botSettings.notLoaded", {}, "commands", messages).length > 0);
 });
 
+test("new built-in log messages fall back when the mounted catalog is stale", () => {
+  const messages = parseBotMessages({});
+  delete messages.logs["cs.webhookPreviewNoMutation"];
+  assert.equal(getBotText("cs.webhookPreviewNoMutation", {}, "logs", messages),
+    "Forhåndsvisning: ingen Discord-handlinger ble utført.");
+});
+
+test("CS webhook plan reasons are read from the log catalog", () => {
+  assert.equal(getBotText("cs.webhookPreviewNoMutation", {}, "logs"),
+    "Forhåndsvisning: ingen Discord-handlinger ble utført.");
+  assert.equal(getBotText("cs.webhookTeamsSkippedReason", {}, "logs").startsWith("Ett eller flere lag ble utelatt"), true);
+  assert.equal(getBotText("cs.webhookNoEligibleMove", {}, "logs").startsWith("Ingen flytting"), true);
+});
+
 test("messages.json includes every built-in command and audit message and keeps the current welcome copy", async () => {
   const raw = JSON.parse(await readFile(join(process.cwd(), "messages.json"), "utf8")) as {
     commands?: Record<string, unknown>;

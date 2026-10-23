@@ -620,11 +620,11 @@ async function startCsVoiceSync(enabled = config.csVoiceSyncEnabled, live = !con
           report: summary => {
             console.log("CS webhook plan", summary);
             const noMoveReason = summary.dryRun
-              ? getBotText("cs.webhookPreviewNoMutation")
+              ? getBotText("cs.webhookPreviewNoMutation", {}, "logs")
               : summary.skippedTeams > 0
-                ? getBotText("cs.webhookTeamsSkippedReason")
+                ? getBotText("cs.webhookTeamsSkippedReason", {}, "logs")
                 : summary.plannedMembers > 0 && (summary.updatedRooms ?? 0) === 0
-                  ? getBotText("cs.webhookNoEligibleMove") : "";
+                ? getBotText("cs.webhookNoEligibleMove", {}, "logs") : "";
             void logCs(getBotText("cs.webhookSummary", {
               tournament: getBotText(`makeTeamChats.competition.${summary.tournament}`),
               eventType: summary.eventType,
