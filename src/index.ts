@@ -643,9 +643,10 @@ async function startCsVoiceSync(enabled = config.csVoiceSyncEnabled, live = !con
       for (const receiver of receiversToStart.sort((left, right) => left.source === "test" ? -1 : right.source === "test" ? 1 : 0)) {
         try {
           await receiver.runtime.start();
-          void sendCrewLogMessage(client, `[${receiver.sourceLabel}] ${getBotText("cs.webhookListening", {
+          const listeningKey = receiver.source === "test" ? "cs.webhookListening.test" : "cs.webhookListening.mat";
+          void sendCrewLogMessage(client, getBotText(listeningKey, {
             port: receiver.port
-          }, "logs")}`, "cs-detail");
+          }, "logs"), "cs-detail");
         } catch (error) {
           if (receiver.source === "test") throw error;
           csWebhookRuntime = undefined;
