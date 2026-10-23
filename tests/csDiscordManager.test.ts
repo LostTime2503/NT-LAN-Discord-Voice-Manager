@@ -794,3 +794,33 @@ test("match.live and match.map_started also produce room assignments", async () 
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("MAT and test assignments never guess when the same member belongs to both sources", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "cs-cross-source-"));
+  const adapter = new FakeDiscordAdapter();
+  let testActive = true;
+  let matManager: CsDiscordManager;
+  const testManager = new CsDiscordManager(adapter, "111111111111111111", 5_000,
+    join(directory, "test.json"), false, undefined, () => testActive,
+    memberId => matManager.hasAssignedMember(memberId));
+  matManager = new CsDiscordManager(adapter, "111111111111111111", 5_000,
+    join(directory, "mat.json"), false, undefined, () => true,
+    memberId => testManager.hasAssignedMember(memberId));
+  try {
+    await matManager.load();
+    await testManager.load();
+    await matManager.handleMatchEvent(matchEvent("match.ready"), "main", participants, false);
+    await testManager.handleMatchEvent(matchEvent("match.ready", "test:3"), "main", participants, false);
+    adapter.memberChannels.set(discordOne, "111111111111111111");
+    assert.equal(await matManager.handleVoiceStateUpdate(voiceState("111111111111111111", discordOne)), false);
+    assert.equal(await testManager.handleVoiceStateUpdate(voiceState("111111111111111111", discordOne)), false);
+    assert.deepEqual(adapter.moved, []);
+    testActive = false;
+    assert.equal(await testManager.handleVoiceStateUpdate(voiceState("111111111111111111", discordOne)), false);
+    assert.equal(await matManager.handleVoiceStateUpdate(voiceState("111111111111111111", discordOne)), true);
+    await testManager.clearAssignments();
+    assert.deepEqual(await testManager.getAssignments(), []);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

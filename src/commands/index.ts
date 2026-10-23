@@ -8,6 +8,7 @@ import { csLinkCommand } from "./csLink.js";
 import { csUnlinkCommand } from "./csUnlink.js";
 import { csStatusCommand } from "./csStatus.js";
 import { botSettingsCommand } from "./botSettings.js";
+import { csSettingsCommand } from "./csSettings.js";
 import { makeTeamChatsCommand } from "./makeTeamChats.js";
 import { cleanCsVcCommand } from "./cleanCsVc.js";
 import { notifyCsParticipantsCommand } from "./notifyCsParticipants.js";
@@ -34,6 +35,7 @@ export const commands = [
   csUnlinkCommand,
   csStatusCommand,
   botSettingsCommand,
+  csSettingsCommand,
   makeTeamChatsCommand,
   cleanCsVcCommand,
   notifyCsParticipantsCommand,

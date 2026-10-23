@@ -1,4 +1,4 @@
-import { BotSettingsStore, type BotFeature, type BotFeatureSettings, type BotLiveSettings, type CrewLogMode, type LiveFeature } from "./botSettings.js";
+import { BotSettingsStore, type BotFeature, type BotFeatureSettings, type BotLiveSettings, type CrewLogMode, type LiveFeature, type CsWebhookSource, type CsSourceMode, type CsSourceSettings } from "./botSettings.js";
 
 export interface BotSettingsApplyHandler {
   (feature: BotFeature, enabled: boolean, live: boolean): Promise<void>;
@@ -11,6 +11,7 @@ export interface BotSettingsResult {
 }
 
 export class BotSettingsController {
+  private sourceTransition = false;
   constructor(private readonly store: BotSettingsStore, private readonly apply: BotSettingsApplyHandler) {}
 
   async load(): Promise<BotFeatureSettings> {
@@ -31,6 +32,29 @@ export class BotSettingsController {
 
   async setCrewLogMode(mode: CrewLogMode): Promise<void> {
     await this.store.setCrewLogMode(mode);
+  }
+
+  getCsSources(): CsSourceSettings {
+    return this.store.getCsSources();
+  }
+
+  async setCsSource(source: CsWebhookSource, mode: CsSourceMode, confirmLive = false): Promise<void> {
+    if (this.sourceTransition) throw new Error("A source transition is already running.");
+    if (mode === "live" && !confirmLive) throw new Error("Live confirmation required.");
+    const previous = this.store.getCsSources()[source];
+    this.sourceTransition = true;
+    try {
+      await this.store.setCsSource(source, mode);
+      try {
+        if (this.store.getAll().csVoice) await this.apply("csVoice", true, this.store.getLive().csVoice);
+      } catch (error) {
+        await this.store.setCsSource(source, previous);
+        if (this.store.getAll().csVoice) await this.apply("csVoice", true, this.store.getLive().csVoice).catch(() => undefined);
+        throw error;
+      }
+    } finally {
+      this.sourceTransition = false;
+    }
   }
 
   async setFeature(feature: BotFeature, enabled: boolean, confirmLive = false): Promise<BotSettingsResult> {

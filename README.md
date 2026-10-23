@@ -28,6 +28,77 @@ Discord-bot for NT-LAN voice channel management.
 | `CS_WEBHOOK_PORT` | Nei (standard `8787`) | Privat HTTP-port for MAT-webhooks. |
 | `CS_WEBHOOK_BIND_ADDRESS` | Nei (standard `127.0.0.1`) | Vertens adresse som publiserer webhook-porten; endre til privat server-IP hvis MAT ikke kan nå loopback. |
 | `MAT_WEBHOOK_SECRET` | Nei | HMAC-hemmeligheten fra MAT Settings → Webhooks. Hold den utenfor Git og logger. |
+| `CS_TEST_WEBHOOK_PORT` | Nei (standard `8788`) | Separat port for syntetiske kamp-events. |
+| `CS_TEST_WEBHOOK_BIND_ADDRESS` | Nei (standard `127.0.0.1`) | Host-adresse for testporten; bruk privat adresse som test-PC kan nå. |
+| `CS_TEST_WEBHOOK_SECRET` | Nei | Egen HMAC-hemmelighet, forskjellig fra MAT-hemmeligheten. Uten denne starter ikke testmottakeren. |
+
+### Syntetiske CS-webhooks i samme Discord-server
+
+Testmottakeren bruker `/webhooks/cs-test`, mens ekte MAT beholder `/webhooks/mat` og dagens port.
+Begge bruker samme signaturverifisering og kampbehandling. Testkilden bruker bare manuelle `/cs-link`-koblinger,
+uten MAT-oppslag. Kildene har separate køer, kampnøkler, romtilstand og deduplisering.
+Samme spiller med aktive oppdrag fra begge live-kilder flyttes ikke automatisk, fordi rutingen er tvetydig.
+
+Crew velger per kilde med `/cs-settings kilde:mat|test modus:off|preview|live`:
+
+- `off`: kvitter og logg uten kampbehandling eller senere avspilling.
+- `preview`: beregn planen uten Discord-endringer eller aktive rutingsoppdrag.
+- `live`: tillat handlinger; krever `bekreft_live:true`.
+
+Innstillingene lagres i bot-data. Gamle installasjoner beholder MAT live og starter test av.
+Hovedbryter og live-bekreftelse for CS-voice i `/bot-settings` gjelder fortsatt; kilde-live overstyrer ikke dem.
+Bytte av kildeinnstilling starter CS-mottakerne kontrollert på nytt og avbryter slettetimere.
+Av/preview fjerner kildens gamle rutingsoppdrag uten å slette rom med folk i.
+En Discord-forespørsel som allerede er sendt kan fullføres; påfølgende handlinger kontrollerer modus på nytt.
+Crew-loggnivået styres fortsatt via `/bot-settings loggniva:cs-test` eller `detailed-cs`.
+Loggene prefikses med `[MAT]` eller `[TESTSCRIPT]`, uavhengig av payloadens `test`-felt.
+
+I Dockhand setter operatøren `CS_TEST_WEBHOOK_BIND_ADDRESS=172.18.80.50`, `CS_TEST_WEBHOOK_PORT=8788`
+og en ny `CS_TEST_WEBHOOK_SECRET` via hemmelig serverkonfigurasjon. Ikke bruk MATs hemmelighet på nytt.
+Rebuild/redeploy med **Build images on deploy**, og publiser slash-kommandoene på nytt:
+
+```bash
+docker exec discord-voice-manager-bot-1 node dist/deploy-commands.js
+```
+
+Fra PC-en kan eksisterende WireGuard-rute til `172.18.80.50` brukes; ingen SSH eller WireGuard-endring er nødvendig
+dersom ruten fortsatt virker. Test med `Test-NetConnection 172.18.80.50 -Port 8788` etter deploy.
+Publiser ikke testporten på alle nettverksgrensesnitt. Kontroller hostens/Dockers brannmur for ønsket privat kilde.
+HMAC autentiserer, men krypterer ikke HTTP; bruk bare privat nett/tunnel, eller HTTPS hvis transporten er offentlig.
+
+I PowerShell settes `CS_TEST_WEBHOOK_SECRET` bare i prosessen, uten at verdien vises eller skrives i kommandohistorikken:
+
+```powershell
+$secureSecret = Read-Host 'Test webhook secret' -AsSecureString
+$env:CS_TEST_WEBHOOK_SECRET = [System.Net.NetworkCredential]::new('', $secureSecret).Password
+```
+
+Koble fire testkontoer med `/cs-link` til fire unike, formatgyldige test-ID-er. Velg MAT off og test preview først.
+Scriptet nedenfor leser ikke miljøfiler og bruker aldri `MAT_WEBHOOK_SECRET`.
+Eksempel-ID-ene er syntetiske testdata, ikke bekreftede eller reserverte Steam-kontoer.
+
+```powershell
+node scripts/send-fake-cs-match.mjs --url=http://172.18.80.50:8788/webhooks/cs-test --match-id=wingman-test-01 --sequence=1 --signature-test
+node scripts/send-fake-cs-match.mjs --url=http://172.18.80.50:8788/webhooks/cs-test --match-id=wingman-test-01 --sequence=2 --event=match.live --team-one=76561199999999991,76561199999999992 --team-two=76561199999999993,76561199999999994
+```
+
+Signaturtesten bruker `test:true` og utløser aldri kampbehandling. Syntetiske kamper bruker `test:false`;
+det er mottakerporten og hemmeligheten, ikke dette feltet, som bestemmer kilden.
+Etter godkjent preview velges test live med bekreftelse, og samme `match.live` sendes med `--sequence=3`.
+Begge Wingman-rom skal opprettes uten noen i lobbyen; la deretter testkontoene gå inn i CS-lobbyen for ruting.
+Avslutt med samme kamp-ID og høyere sekvensnummer:
+
+```powershell
+node scripts/send-fake-cs-match.mjs --url=http://172.18.80.50:8788/webhooks/cs-test --match-id=wingman-test-01 --sequence=4 --event=match.finished
+Remove-Item Env:CS_TEST_WEBHOOK_SECRET
+Remove-Variable secureSecret
+```
+
+HTTP 202 er mottakskvittering, ikke bevis på at en Discord-handling lyktes; følg `[TESTSCRIPT]` i Crew-loggen.
+Tomme bot-rom ryddes etter kampavslutning; bebodde rom beholdes til de blir tomme.
+`--scope=main` krever fem Steam-ID-er per lag. `match.ready`, `match.cancelled` og `match.reset` støttes også.
+Gjenbruk kamp-ID gjennom livssyklusen, øk sekvensnummeret og bruk ny kamp-ID for neste selvstendige test.
+Når testen er ferdig: sett test off, gjenopprett ønsket MAT-modus og kategoriens vanlige rettigheter.
 
 CS-webhook-runtime starter bare med `CS_VOICE_SYNC_ENABLED=true`, `MAT_WEBHOOK_SECRET` og registrerings-API konfigurert. Botens MAT-klient oppdager aktive turneringer fra `GET /api/tournaments`: aktiv shuffle med lagstørrelse 2 klassifiseres som Wingman, aktiv ikke-shuffle med lagstørrelse 5 som Main. Flere kandidater i samme klasse behandles som tvetydige og brukes ikke; turnerings-ID-er trenger dermed ikke legges i miljøet når formatet er entydig. Ved startup leses bracket for oppdagede turneringer; for en entydig aktiv Wingman-match hentes detaljene med `GET /api/matches/:slug`. Runtime lagrer team-/parassignments, men oppretter ikke et fullt sett rom på forhånd. En kvalifisert spiller som kommer inn i `CS_LOBBY_CHANNEL_ID` rutes til sin unike assignment. Ved en oppdatert Wingman-paring kan kvalifiserte spillere som allerede står i andre voice-rom i CS-kategorien flyttes direkte til det nye laget. Uklare eller ufullstendige svar endrer ikke eksisterende rom. Tomme bot-eide CS-rom slettes etter `CS_EMPTY_CHANNEL_DELETE_DELAY_MS`; timeren avbrytes hvis noen går inn igjen. Hvis en tildelt spiller senere kommer til lobbyen etter at rommet er slettet, opprettes rommet på nytt. Kampavslutning sletter ikke opptatte rom; bruk `/clean-cs-vc` for eksplisitt opprydding, særlig for eldre eller manuelt opprettede rom. Webhook-porten publiseres kun på `CS_WEBHOOK_BIND_ADDRESS` (standard loopback); sett den til en privat serveradresse MAT kan nå, og aktiver MATs private/LAN-webhookvalg. Bruk Docker-nettverkets tjenestenavn mellom containere, ikke `localhost`. HMAC verifiserer avsender, men krypterer ikke payloaden. `test: true` eventer kvitteres uten lagring eller Discord-handlinger. Kølagring er atomisk i `data/cs-webhook-events.json`; score/map-eventer kvitteres uten kølegging. `CS_VOICE_SYNC_DRY_RUN=false` starter live-handlinger uten en automatisk kanalrettighets-preflight; rettigheter settes og kontrolleres manuelt av Crew. Ufullstendige rettigheter gir feil når boten utfører den aktuelle Discord-handlingen. Test først i egen Discord-server.
 

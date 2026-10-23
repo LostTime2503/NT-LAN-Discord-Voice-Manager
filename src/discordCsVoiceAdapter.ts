@@ -44,7 +44,8 @@ export class DiscordJsCsVoiceAdapter implements CsDiscordAdapter {
     private readonly lobbyChannelId: string,
     private readonly participantRoleId: string,
     private readonly manualParticipantRoleId: string | undefined,
-    private readonly crewRoleId: string
+    private readonly crewRoleId: string,
+    private readonly canMutate: () => boolean = () => true
   ) {}
 
   async validate(): Promise<void> {
@@ -118,6 +119,7 @@ export class DiscordJsCsVoiceAdapter implements CsDiscordAdapter {
     }
 
     if (!channel) {
+      this.assertMutationAllowed();
       channel = await guild.channels.create({
         name: channelName,
         type: ChannelType.GuildVoice,
@@ -128,12 +130,15 @@ export class DiscordJsCsVoiceAdapter implements CsDiscordAdapter {
     }
 
     if (channel.name !== channelName) {
+      this.assertMutationAllowed();
       await channel.setName(channelName, "Update MAT-owned CS team room name");
     }
     if (channel.bitrate !== guild.maximumBitrate) {
+      this.assertMutationAllowed();
       await channel.setBitrate(guild.maximumBitrate, "Update MAT-owned CS team room to guild maximum bitrate");
     }
     if (!channel.permissionsLocked) {
+      this.assertMutationAllowed();
       await channel.lockPermissions();
     }
     return channel.id;
@@ -158,6 +163,7 @@ export class DiscordJsCsVoiceAdapter implements CsDiscordAdapter {
       || !this.hasManagedRoomMarker(channel.name)) {
       throw new Error("Target CS voice channel is not a bot-owned room.");
     }
+    this.assertMutationAllowed();
     await member.voice.setChannel(channel, "Route MAT-assigned player from CS lobby");
     return true;
   }
@@ -219,9 +225,10 @@ export class DiscordJsCsVoiceAdapter implements CsDiscordAdapter {
     }
     const target = await guild.channels.fetch(channelId);
     if (!target || target.type !== ChannelType.GuildVoice || target.parentId !== this.categoryId
-      || !/^\[MAT-[a-f0-9]{12}\] /.test(target.name)) {
+      || !this.hasManagedRoomMarker(target.name)) {
       throw new Error("Target CS voice channel is not a bot-owned room.");
     }
+    this.assertMutationAllowed();
     await member.voice.setChannel(target, "Route MAT-assigned player to updated CS team room");
     return true;
   }
@@ -309,6 +316,7 @@ export class DiscordJsCsVoiceAdapter implements CsDiscordAdapter {
   }
 
   private async deleteEmptyRoomIfStillOwned(channelId: string, onDeleted: () => Promise<void>): Promise<void> {
+    if (!this.canMutate()) return;
     const guild = await this.client.guilds.fetch(this.guildId);
     const channel = await this.fetchChannelIfPresent(guild, channelId);
     if (!channel) {
@@ -316,6 +324,7 @@ export class DiscordJsCsVoiceAdapter implements CsDiscordAdapter {
       return;
     }
     if (!this.isOwnedCsRoom(channel) || channel.members.size > 0) return;
+    this.assertMutationAllowed();
     await channel.delete("MAT-owned CS voice room remained empty");
     await onDeleted();
   }
@@ -327,6 +336,10 @@ export class DiscordJsCsVoiceAdapter implements CsDiscordAdapter {
       if (error instanceof DiscordAPIError && error.code === 10003) return null;
       throw error;
     }
+  }
+
+  private assertMutationAllowed(): void {
+    if (!this.canMutate()) throw new Error("CS source is no longer live.");
   }
 
   private isOwnedCsRoom(channel: unknown): channel is VoiceBasedChannel {

@@ -8,12 +8,16 @@ export const liveFeatures = ["access", "csRoles", "csVoice"] as const;
 export type LiveFeature = typeof liveFeatures[number];
 export type BotLiveSettings = Record<LiveFeature, boolean>;
 export type CrewLogMode = "full" | "minimal" | "cs-test" | "detailed-cs";
+export type CsWebhookSource = "mat" | "test";
+export type CsSourceMode = "off" | "preview" | "live";
+export type CsSourceSettings = Record<CsWebhookSource, CsSourceMode>;
 
 interface PersistedBotSettings {
   version: 1;
   features: BotFeatureSettings;
   live: BotLiveSettings;
   crewLogMode: CrewLogMode;
+  csSources: CsSourceSettings;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -24,6 +28,7 @@ export class BotSettingsStore {
   private settings: BotFeatureSettings;
   private liveSettings: BotLiveSettings;
   private crewLogMode: CrewLogMode = "full";
+  private csSources: CsSourceSettings = { mat: "live", test: "off" };
   private loaded = false;
   private writeQueue: Promise<void> = Promise.resolve();
 
@@ -43,6 +48,12 @@ export class BotSettingsStore {
       const features = isRecord(payload) && isRecord(payload.features) ? payload.features : undefined;
       const live = isRecord(payload) && isRecord(payload.live) ? payload.live : undefined;
       const crewLogMode = isRecord(payload) ? payload.crewLogMode : undefined;
+      const csSources = isRecord(payload) ? payload.csSources : undefined;
+      if (csSources !== undefined && (!isRecord(csSources)
+        || !["off", "preview", "live"].includes(String(csSources.mat))
+        || !["off", "preview", "live"].includes(String(csSources.test)))) {
+        throw new Error("Invalid CS source settings.");
+      }
       if (!isRecord(payload) || payload.version !== 1 || !features || !live
         || botFeatures.some(feature => typeof features[feature] !== "boolean")
         || liveFeatures.some(feature => typeof live[feature] !== "boolean")
@@ -56,6 +67,7 @@ export class BotSettingsStore {
       this.crewLogMode = crewLogMode === "minimal" || crewLogMode === "cs-test" || crewLogMode === "detailed-cs"
         ? crewLogMode
         : "full";
+      if (isRecord(csSources)) this.csSources = { mat: csSources.mat as CsSourceMode, test: csSources.test as CsSourceMode };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("Bot settings could not be loaded.");
     }
@@ -76,6 +88,23 @@ export class BotSettingsStore {
   getCrewLogMode(): CrewLogMode {
     if (!this.loaded) throw new Error("Bot settings have not been loaded.");
     return this.crewLogMode;
+  }
+
+  getCsSources(): CsSourceSettings {
+    if (!this.loaded) throw new Error("Bot settings have not been loaded.");
+    return { ...this.csSources };
+  }
+
+  async setCsSource(source: CsWebhookSource, mode: CsSourceMode): Promise<void> {
+    await this.load();
+    const previous = this.csSources[source];
+    this.csSources[source] = mode;
+    try {
+      await this.persist();
+    } catch (error) {
+      this.csSources[source] = previous;
+      throw error;
+    }
   }
 
   async setCrewLogMode(mode: CrewLogMode): Promise<void> {
@@ -123,7 +152,8 @@ export class BotSettingsStore {
       version: 1,
       features: this.getAll(),
       live: this.getLive(),
-      crewLogMode: this.getCrewLogMode()
+      crewLogMode: this.getCrewLogMode(),
+      csSources: this.getCsSources()
     };
     const task = this.writeQueue.catch(() => undefined).then(async () => {
       await mkdir(dirname(this.filePath), { recursive: true });

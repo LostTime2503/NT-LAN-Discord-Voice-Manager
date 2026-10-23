@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +16,7 @@ import {
 import type { MatBracketSummary, MatClient, MatMatchSnapshot } from "../src/matClient.js";
 import type { RegisteredPerson } from "../src/registrationClient.js";
 import { CsDiscordManager, type CsDiscordAdapter } from "../src/csDiscordManager.js";
+import type { CsSourceMode } from "../src/botSettings.js";
 import type { MatTournament } from "../src/matClient.js";
 
 const secret = "synthetic-webhook-secret-with-enough-entropy";
@@ -21,6 +24,88 @@ const discordOne = "123456789012345678";
 const discordTwo = "123456789012345679";
 const steamOne = "76561198000000001";
 const steamTwo = "76561198000000002";
+
+test("test sender uses isolated source, previews without assignments, and creates/cleans rooms in live mode", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "cs-test-source-"));
+  const testSecret = "synthetic-separate-test-secret";
+  let mode: CsSourceMode = "off";
+  let created = 0;
+  const deleted: string[] = [];
+  const notices: string[] = [];
+  const participants = new Map<string, RegisteredPerson>([
+    [discordOne, { name: "fixture", firstName: "fixture", steamId: steamOne }],
+    [discordTwo, { name: "fixture", firstName: "fixture", steamId: steamTwo }],
+    ["123456789012345680", { name: "fixture", firstName: "fixture", steamId: "76561198000000003" }],
+    ["123456789012345681", { name: "fixture", firstName: "fixture", steamId: "76561198000000004" }]
+  ]);
+  const adapter = {
+    ensureRoom: async () => String(4_000_000_000_000_000_000n + BigInt(++created)),
+    canRouteMemberFromLobby: async () => false,
+    canRouteMemberFromCsVoice: async () => false,
+    deleteRoomWhenEmpty: async (id: string, _delay: number, onDeleted: () => Promise<void>) => {
+      deleted.push(id);
+      await onDeleted();
+    },
+    cancelAllRoomDeletions: () => undefined
+  } as unknown as CsDiscordAdapter;
+  const manager = new CsDiscordManager(adapter, "111111111111111111", 1, join(directory, "rooms.json"), false);
+  const store = new CsEventStore(join(directory, "events.json"));
+  const reports: CsWebhookDryRunReport[] = [];
+  const runtime = new CsWebhookRuntime({
+    secret: testSecret, port: 0, host: "127.0.0.1", path: "/webhooks/cs-test", namespace: "test",
+    getMode: () => mode, dryRun: false, intervalMs: 60_000,
+    registration: { getParticipants: async () => participants },
+    discordManager: manager, store, report: summary => reports.push(summary),
+    onTestEvent: () => notices.push("signature-test"),
+    onEventIgnored: (_eventType, reason) => notices.push(reason)
+  });
+  try {
+    await runtime.start();
+    const url = `http://127.0.0.1:${runtime.address!.port}/webhooks/cs-test`;
+    const send = async (sequence: number, extra: string[] = []) => {
+      const result = await promisify(execFile)(process.execPath, [
+        "scripts/send-fake-cs-match.mjs", `--url=${url}`, "--match-id=fixture-match", `--sequence=${sequence}`,
+        `--team-one=${steamOne},${steamTwo}`, "--team-two=76561198000000003,76561198000000004", ...extra
+      ], { env: { ...process.env, CS_TEST_WEBHOOK_SECRET: testSecret } });
+      assert.match(result.stdout, /HTTP 202/);
+      for (let attempt = 0; attempt < 200 && (await store.getPending()).length; attempt += 1) {
+        await new Promise(resolve => setTimeout(resolve, 5));
+      }
+      assert.deepEqual(await store.getPending(), []);
+    };
+    await send(1, ["--signature-test"]);
+    await send(2);
+    assert.equal(created, 0);
+    assert.deepEqual(await manager.getAssignments(), []);
+    assert.ok(notices.includes("signature-test"));
+    assert.ok(notices.some(reason => reason.includes("kilden er av")));
+
+    mode = "preview";
+    await send(3);
+    assert.equal(created, 0);
+    assert.deepEqual(await manager.getAssignments(), []);
+    assert.equal(reports.at(-1)?.dryRun, true);
+    assert.equal(reports.at(-1)?.plannedRooms, 2);
+
+    mode = "live";
+    await send(4);
+    assert.equal(created, 2);
+    const assignments = await manager.getAssignments();
+    assert.equal(assignments.length, 2);
+    assert.ok(assignments.every(request => request.tournamentId.startsWith("test:") && request.matchSlug.startsWith("test:")));
+    await send(5, ["--event=match.finished"]);
+    assert.deepEqual(await manager.getAssignments(), []);
+    assert.deepEqual(await manager.getRooms(), []);
+    assert.equal(deleted.length, 2);
+
+    const wrongSecret = signedReadyRequest(3);
+    assert.equal((await fetch(url, { method: "POST", headers: wrongSecret.headers, body: wrongSecret.body })).status, 401);
+    assert.equal((await fetch(url.replace("cs-test", "mat"), { method: "POST" })).status, 404);
+  } finally {
+    await runtime.stop();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 function signedReadyRequest(tournamentId: number, id = "runtime-test-event") {
   const payload = {
@@ -48,6 +133,79 @@ function signedReadyRequest(tournamentId: number, id = "runtime-test-event") {
     headers: { "content-type": "application/json", "x-at-signature": `t=${timestamp},v1=${digest}` }
   };
 }
+
+test("switching a source off during participant lookup prevents mutations and later replay", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "cs-source-inflight-"));
+  const store = new CsEventStore(join(directory, "events.json"));
+  let mode: CsSourceMode = "live";
+  let processed = 0;
+  let releaseParticipants!: (participants: Map<string, RegisteredPerson>) => void;
+  let markStarted!: () => void;
+  const started = new Promise<void>(resolve => { markStarted = resolve; });
+  const participants = new Promise<Map<string, RegisteredPerson>>(resolve => { releaseParticipants = resolve; });
+  const runtime = new CsWebhookRuntime({
+    secret, port: 0, host: "127.0.0.1", intervalMs: 60_000,
+    getMode: () => mode, dryRun: false, store,
+    registration: { getParticipants: async () => { markStarted(); return participants; } },
+    discordManager: {
+      load: async () => undefined,
+      handleMatchEvent: async () => { processed += 1; throw new Error("Must not execute"); }
+    } as unknown as CsDiscordManager,
+    report: () => undefined
+  });
+  try {
+    await runtime.start();
+    const body = Buffer.from(JSON.stringify({
+      id: "inflight-source-event", type: "match.live", test: false,
+      data: { sequence: 1, match: {
+        id: "source-match", slug: "source-match", status: "live", game: "cs2", tournament: null,
+        team1: { id: "a", players: [steamOne, steamTwo].map(steam_id64 => ({ steam_id64 })) },
+        team2: { id: "b", players: ["76561198000000003", "76561198000000004"].map(steam_id64 => ({ steam_id64 })) }
+      } }
+    }));
+    const timestamp = Math.floor(Date.now() / 1000);
+    const digest = createHmac("sha256", secret).update(`${timestamp}.`).update(body).digest("hex");
+    const response = await fetch(`http://127.0.0.1:${runtime.address!.port}/webhooks/mat`, {
+      method: "POST", body,
+      headers: { "content-type": "application/json", "x-at-signature": `t=${timestamp},v1=${digest}` }
+    });
+    assert.equal(response.status, 202);
+    await started;
+    mode = "off";
+    releaseParticipants(new Map());
+    await runtime.stop();
+    assert.equal(processed, 0);
+    assert.deepEqual(await store.getPending(), []);
+    mode = "live";
+    await runtime.start();
+    await runtime.stop();
+    assert.equal(processed, 0);
+  } finally {
+    releaseParticipants(new Map());
+    await runtime.stop();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("disabled MAT source does not query tournament APIs during receiver startup", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "cs-mat-source-off-"));
+  let matCalls = 0;
+  const runtime = new CsWebhookRuntime({
+    secret, port: 0, host: "127.0.0.1", intervalMs: 60_000,
+    getMode: () => "off",
+    mat: { getTournaments: async () => { matCalls += 1; throw new Error("MAT unavailable"); } } as unknown as MatClient,
+    registration: { getParticipants: async () => new Map() },
+    store: new CsEventStore(join(directory, "events.json"))
+  });
+  try {
+    await runtime.start();
+    assert.equal(runtime.address?.port !== undefined, true);
+    assert.equal(matCalls, 0);
+  } finally {
+    await runtime.stop();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("Wingman recovery selects one active match from a valid 2v2 shuffle bracket", () => {
   const bracket: MatBracketSummary = {

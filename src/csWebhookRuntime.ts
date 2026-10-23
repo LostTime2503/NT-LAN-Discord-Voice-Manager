@@ -8,6 +8,7 @@ import type { CsRegistrationSource } from "./csSyncRuntime.js";
 import type { RegisteredPerson } from "./registrationClient.js";
 import type { AddressInfo } from "node:net";
 import type { CsDiscordManager } from "./csDiscordManager.js";
+import type { CsSourceMode } from "./botSettings.js";
 
 export interface CsWebhookDryRunReport {
   eventType: string;
@@ -26,6 +27,9 @@ export interface CsWebhookDryRunReport {
 export interface CsWebhookRuntimeOptions {
   secret: string;
   port: number;
+  path?: string;
+  namespace?: "test";
+  getMode?: () => CsSourceMode;
   host?: string;
   intervalMs: number;
   mat?: MatClient;
@@ -166,8 +170,9 @@ export class CsWebhookRuntime {
     if (this.receiver) return;
     await this.store.load();
     await this.options.discordManager?.load();
-    if (this.options.mat) await this.refreshTournamentDiscovery();
-    if (this.options.discordManager && this.options.mat
+    if (this.options.getMode && this.mode() !== "live") await this.options.discordManager?.clearAssignments();
+    if (this.options.mat && this.mode() !== "off") await this.refreshTournamentDiscovery();
+    if (this.options.discordManager && this.options.mat && this.mode() === "live"
       && (this.activeMainTournamentId || this.activeWingmanTournamentId)) {
       try {
         const teams = await this.options.mat.getTeams();
@@ -219,6 +224,7 @@ export class CsWebhookRuntime {
     }
     const receiver = createMatWebhookReceiver({
       secret: this.options.secret,
+      path: this.options.path,
       onVerifiedRequest: request => {
         const receivedAt = Date.now();
         this.lastSignedRequestAt = receivedAt;
@@ -233,6 +239,26 @@ export class CsWebhookRuntime {
         }
       },
       onEvent: async event => {
+        if (this.options.namespace) {
+          event.match.tournamentId = `test:${event.match.tournamentId}`;
+          event.match.slug = `test:${event.match.slug}`;
+        }
+        const mode = this.mode();
+        if (mode !== "live") {
+          this.options.onEventReceived?.({
+            eventType: event.type, matchStatus: event.match.status, sequence: event.sequence,
+            team1Players: event.match.team1?.steamIds.length ?? 0,
+            team2Players: event.match.team2?.steamIds.length ?? 0
+          });
+          if (mode === "off") {
+            this.options.onEventIgnored?.(event.type, "kilden er av; kvittert uten behandling eller senere avspilling");
+          } else {
+            const resolution = await this.tournamentFor(event);
+            if (resolution) await this.processEvent(event, resolution.scope, resolution.rosterFallback ? "roster" : "api", true);
+            else this.options.onEventIgnored?.(event.type, "forhåndsvisning: ingen støttet turnering/roster; ingen aktive oppdrag endret");
+          }
+          return;
+        }
         const result = await this.store.accept(event);
         if (result === "accepted") {
           try {
@@ -281,6 +307,9 @@ export class CsWebhookRuntime {
       await new Promise<void>((resolve, reject) => receiver.close(error => error ? reject(error) : resolve()));
     }
     await this.processing;
+    if (this.options.getMode && this.mode() !== "live") {
+      for (const event of await this.store.getPending()) await this.store.markProcessed(event.id);
+    }
   }
 
   private processPending(): void {
@@ -305,6 +334,11 @@ export class CsWebhookRuntime {
   private async drainPending(): Promise<void> {
     try {
       for (const event of await this.store.getPending()) {
+        if (this.mode() !== "live") {
+          await this.store.markProcessed(event.id);
+          this.options.onEventIgnored?.(event.type, "kildens modus ble endret; køet event forkastet uten avspilling");
+          continue;
+        }
         let resolution: Awaited<ReturnType<CsWebhookRuntime["tournamentFor"]>>;
         try {
           resolution = await this.tournamentFor(event);
@@ -424,15 +458,24 @@ export class CsWebhookRuntime {
       : this.options.registration.getParticipants();
   }
 
+  private mode(): CsSourceMode {
+    return this.options.getMode?.() ?? "live";
+  }
+
   private async processEvent(
     event: MatWebhookEvent,
     tournament: "main" | "wingman",
-    tournamentSource: "api" | "roster"
+    tournamentSource: "api" | "roster",
+    previewOnly = false
   ): Promise<boolean> {
-    if (this.options.discordManager) {
+    if (this.options.discordManager && !previewOnly) {
       const participants = isCsRoomAssignmentEvent(event.type)
         ? await this.getCsParticipants()
         : new Map();
+      if (this.mode() !== "live") {
+        this.options.onEventIgnored?.(event.type, "modus endret under API-oppslag; ingen handling utført");
+        return false;
+      }
       const summary = await this.options.discordManager.handleMatchEvent(
         event,
         tournament,
@@ -470,16 +513,18 @@ export class CsWebhookRuntime {
         players: team.steamIds.map(steamId => ({ steamId }))
       }));
     const plan = planCsTeamRooms(teams, participants);
+    const completeWingman = tournament !== "wingman" || (event.match.team1?.steamIds.length === 2
+      && event.match.team2?.steamIds.length === 2 && plan.rooms.length === 2 && plan.skippedTeamCount === 0);
     this.report({
       eventType: event.type,
       tournament,
       tournamentSource,
-      dryRun: this.options.dryRun ?? true,
-      plannedRooms: plan.rooms.length,
-      plannedMembers: new Set(plan.rooms.flatMap(room => room.memberIds)).size,
+      dryRun: true,
+      plannedRooms: completeWingman ? plan.rooms.length : 0,
+      plannedMembers: completeWingman ? new Set(plan.rooms.flatMap(room => room.memberIds)).size : 0,
       roomsEnsured: 0,
       updatedRooms: 0,
-      skippedTeams: plan.skippedTeamCount,
+      skippedTeams: completeWingman ? plan.skippedTeamCount : Math.max(2, plan.skippedTeamCount),
       unmatchedPlayers: plan.unmatchedParticipantCount,
       ambiguousSteamIds: plan.ambiguousSteamIdCount
     });

@@ -9,6 +9,7 @@ import { MatClient } from "./matClient.js";
 import { RegistrationClient } from "./registrationClient.js";
 import { CsSyncRuntime } from "./csSyncRuntime.js";
 import { CsWebhookRuntime } from "./csWebhookRuntime.js";
+import { CsEventStore } from "./csEventStore.js";
 import { isCsRoomAssignmentEvent } from "./csWebhookServer.js";
 import { CsDiscordManager } from "./csDiscordManager.js";
 import { DiscordJsCsVoiceAdapter } from "./discordCsVoiceAdapter.js";
@@ -17,7 +18,7 @@ import { giveAccessCommand } from "./commands/giveAccess.js";
 import { CsParticipantRoleRuntime } from "./csParticipantRoleRuntime.js";
 import { loadBotMessages } from "./messages.js";
 import { BotSettingsStore, type BotFeature } from "./botSettings.js";
-import { BotSettingsController, configureBotSettingsController } from "./botSettingsController.js";
+import { BotSettingsController, configureBotSettingsController, getBotSettingsController } from "./botSettingsController.js";
 import { setCsWebhookRuntime } from "./csWebhookDiagnostics.js";
 import { notifyCsParticipantsCommand } from "./commands/notifyCsParticipants.js";
 import { csNotificationModalCommand, csNotificationScheduleStore } from "./commands/csNotificationModalCommand.js";
@@ -35,6 +36,9 @@ const client = new Client({
 let csSyncRuntime: CsSyncRuntime | undefined;
 let csWebhookRuntime: CsWebhookRuntime | undefined;
 let csDiscordManager: CsDiscordManager | undefined;
+let csTestWebhookRuntime: CsWebhookRuntime | undefined;
+let csTestDiscordManager: CsDiscordManager | undefined;
+let stopCsSourceMutations: (() => void) | undefined;
 let csParticipantRoleRuntime: CsParticipantRoleRuntime | undefined;
 let csNotificationScheduler: CsNotificationScheduler | undefined;
 let mealParticipantRoleRuntime: MealParticipantRoleRuntime | undefined;
@@ -168,7 +172,11 @@ async function shutdown(): Promise<void> {
   csNotificationScheduler?.stop();
   mealParticipantRoleRuntime?.stop();
   mealNotificationScheduler?.stop();
+  stopCsSourceMutations?.();
+  csDiscordManager?.cancelPendingRoomDeletions();
+  csTestDiscordManager?.cancelPendingRoomDeletions();
   await csWebhookRuntime?.stop();
+  await csTestWebhookRuntime?.stop();
   await sendCrewLogMessage(client, getBotText("bot.offline", {}, "logs"));
   client.destroy();
   process.exit(0);
@@ -299,6 +307,11 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
       console.error("CS voice state handling failed.");
     });
   }
+  if (csTestDiscordManager) {
+    void csTestDiscordManager.handleVoiceStateUpdate(newState, oldState.channelId ?? undefined).catch(() => {
+      void sendCrewLogMessage(client, "[TESTSCRIPT] CS voice-ruting feilet; ingen rå feildetaljer logget.", "cs-detail");
+    });
+  }
 });
 
 client.on(Events.GuildMemberAdd, (member) => {
@@ -420,9 +433,15 @@ async function startCsParticipantRoleSync(enabled = config.csRoleSyncEnabled, li
 }
 
 async function startCsVoiceSync(enabled = config.csVoiceSyncEnabled, live = !config.csVoiceSyncDryRun): Promise<void> {
+  stopCsSourceMutations?.();
+  csDiscordManager?.cancelPendingRoomDeletions();
+  csTestDiscordManager?.cancelPendingRoomDeletions();
   csSyncRuntime?.stop();
   csSyncRuntime = undefined;
   await csWebhookRuntime?.stop();
+  await csTestWebhookRuntime?.stop();
+  csTestWebhookRuntime = undefined;
+  csTestDiscordManager = undefined;
   csWebhookRuntime = undefined;
   setCsWebhookRuntime(undefined);
   csDiscordManager?.cancelPendingRoomDeletions();
@@ -430,6 +449,12 @@ async function startCsVoiceSync(enabled = config.csVoiceSyncEnabled, live = !con
   if (!enabled) {
     console.log("CS voice sync is disabled.");
     return;
+  }
+  let running = true;
+  stopCsSourceMutations = () => { running = false; };
+  if (config.csTestWebhookSecret && (config.csTestWebhookPort === config.csWebhookPort
+    || config.csTestWebhookSecret === config.matWebhookSecret)) {
+    throw new Error("CS test receiver needs a distinct port and signing secret.");
   }
   const registrationConfigured = [
     config.registrationApiUrl,
@@ -479,105 +504,166 @@ async function startCsVoiceSync(enabled = config.csVoiceSyncEnabled, live = !con
   if (config.matWebhookSecret && registration && csRegistration) {
     try {
       await manualOverrideStore.load();
-      const mat = config.matUrl && config.matApiToken
-        ? new MatClient({ baseUrl: config.matUrl, apiToken: config.matApiToken })
-        : undefined;
-      if (discordConfigured) {
-        const adapter = new DiscordJsCsVoiceAdapter(
-          client,
-          config.guildId,
-          config.csCategoryId!,
-          config.csLobbyChannelId!,
-          config.csParticipantRoleId!,
-          config.manualCsParticipantRoleId,
-          config.crewRoleId!
-        );
-        csDiscordManager = new CsDiscordManager(
-          adapter,
-          config.csLobbyChannelId!,
-          config.csEmptyChannelDeleteDelayMs,
-          undefined,
-          !live,
-          activity => {
-            console.log("CS webhook action", activity);
-            const competition = getBotText(`makeTeamChats.competition.${activity.scope}`);
-            const messageKey = activity.type === "room-ready" ? "cs.webhookRoomReady"
-              : activity.type === "member-moved" ? "cs.webhookMoved" : "cs.webhookRouteSkipped";
-            const reason = activity.reason ? getBotText(`cs.webhookRouteSkip.${activity.reason}`) : "";
-            void sendCrewLogMessage(client, getBotText(messageKey, { competition, reason }, "logs"), "cs-detail");
-          }
-        );
-      }
-      csWebhookRuntime = new CsWebhookRuntime({
-        secret: config.matWebhookSecret,
-        port: config.csWebhookPort,
-        intervalMs: config.csSyncIntervalMs,
-        mat,
-        registration: csRegistration,
-        dryRun: !live,
-        discordManager: csDiscordManager,
-        onTestEvent: eventType => {
-          console.log("CS webhook test event received", { eventType });
-          void sendCrewLogMessage(client, getBotText("cs.webhookTestReceived", { eventType }, "logs"), "cs-detail");
-        },
-        onEventReceived: event => {
-          console.log("CS webhook event queued", event);
-          void sendCrewLogMessage(client, getBotText("cs.webhookReceived", {
-            eventType: event.eventType,
-            matchStatus: event.matchStatus,
-            sequence: event.sequence,
-            team1Players: event.team1Players,
-            team2Players: event.team2Players
-          }, "logs"), "cs-detail");
-        },
-        onEventRejected: (eventType, reason) => {
-          void sendCrewLogMessage(client, getBotText("cs.webhookRejected", { eventType, reason }, "logs"), "cs-detail");
-        },
-        onEventIgnored: (eventType, reason) => {
-          console.warn("CS webhook event ignored", { eventType, reason });
-          void sendCrewLogMessage(client, getBotText("cs.webhookIgnored", { eventType, reason }, "logs"), "cs-detail");
-        },
-        onTerminalCleanup: (eventType, releasedAssignments) => {
-          const released = releasedAssignments === null
-            ? "match-slug tvetydig; ingen endret"
-            : String(releasedAssignments);
-          console.info("CS terminal webhook cleanup", { eventType, releasedAssignments });
-          void sendCrewLogMessage(client, getBotText("cs.webhookTerminalCleanup", { eventType, released }, "logs"), "cs-detail");
-        },
-        onProcessingFailed: (eventType, stage, reason) => {
-          void sendCrewLogMessage(client, getBotText("cs.webhookProcessingFailed", {
-            eventType, stage, reason
-          }, "logs"), "cs-detail");
-        },
-        report: summary => {
-          console.log("CS webhook plan", summary);
-          const noMoveReason = summary.dryRun
-            ? getBotText("cs.webhookPreviewNoMutation")
-            : summary.skippedTeams > 0
-              ? getBotText("cs.webhookTeamsSkippedReason")
-            : summary.plannedMembers > 0 && (summary.updatedRooms ?? 0) === 0
-              ? getBotText("cs.webhookNoEligibleMove") : "";
-          void sendCrewLogMessage(client, getBotText("cs.webhookSummary", {
-            tournament: getBotText(`makeTeamChats.competition.${summary.tournament}`),
-            eventType: summary.eventType,
-            source: summary.tournamentSource === "roster" ? "roster fallback" : "MAT API",
-            mode: summary.dryRun ? "forhåndsvisning" : "live",
-            planned: summary.plannedRooms,
-            members: summary.plannedMembers,
-            ensured: summary.roomsEnsured ?? 0,
-            moved: summary.updatedRooms ?? 0,
-            skipped: summary.skippedTeams,
-            unmatched: summary.unmatchedPlayers,
-            ambiguous: summary.ambiguousSteamIds,
-            noMoveReason
-          }, "logs"), "cs-summary");
+      const receiversToStart: Array<{ source: "mat" | "test"; runtime: CsWebhookRuntime; port: number; sourceLabel: string }> = [];
+      for (const source of ["mat", "test"] as const) {
+        if (source === "test" && !config.csTestWebhookSecret) continue;
+        const sourceLabel = source === "test" ? "TESTSCRIPT" : "MAT";
+        const sourceMode = () => {
+          if (!running) return "off" as const;
+          const mode = getBotSettingsController()?.getCsSources()[source] ?? (source === "test" ? "off" : "live");
+          return mode === "live" && !live ? "preview" as const : mode;
+        };
+        const logCs = (message: string, category: "cs-detail" | "cs-summary" = "cs-detail") =>
+          sendCrewLogMessage(client, `[${sourceLabel}] ${message}`, category);
+        let sourceManager: CsDiscordManager | undefined;
+        const mat = source === "mat" && sourceMode() !== "off" && config.matUrl && config.matApiToken
+          ? new MatClient({ baseUrl: config.matUrl, apiToken: config.matApiToken })
+          : undefined;
+        if (discordConfigured) {
+          const adapter = new DiscordJsCsVoiceAdapter(
+            client,
+            config.guildId,
+            config.csCategoryId!,
+            config.csLobbyChannelId!,
+            config.csParticipantRoleId!,
+            config.manualCsParticipantRoleId,
+            config.crewRoleId!,
+            () => sourceMode() === "live"
+          );
+          const guardedAdapter = new Proxy(adapter, {
+            get(target, property) {
+              const value = Reflect.get(target, property);
+              if (typeof value !== "function") return value;
+              return (...args: unknown[]) => {
+                if (sourceMode() !== "live" && !["cancelRoomDeletion", "cancelAllRoomDeletions"].includes(String(property))) {
+                  throw new Error("CS source is not live.");
+                }
+                return Reflect.apply(value, target, args);
+              };
+            }
+          });
+          sourceManager = new CsDiscordManager(
+            guardedAdapter,
+            config.csLobbyChannelId!,
+            config.csEmptyChannelDeleteDelayMs,
+            source === "test" ? "data/cs-test-owned-voice-channels.json" : undefined,
+            sourceMode() !== "live",
+            activity => {
+              console.log("CS webhook action", activity);
+              const competition = getBotText(`makeTeamChats.competition.${activity.scope}`);
+              const messageKey = activity.type === "room-ready" ? "cs.webhookRoomReady"
+                : activity.type === "member-moved" ? "cs.webhookMoved" : "cs.webhookRouteSkipped";
+              const reason = activity.reason ? getBotText(`cs.webhookRouteSkip.${activity.reason}`) : "";
+              void logCs(getBotText(messageKey, { competition, reason }, "logs"));
+            },
+            () => sourceMode() === "live",
+            memberId => (source === "test" ? csDiscordManager : csTestDiscordManager)?.hasAssignedMember(memberId) ?? false
+          );
+          if (source === "test") csTestDiscordManager = sourceManager;
+          else csDiscordManager = sourceManager;
         }
-      });
-      await csWebhookRuntime.start();
-      setCsWebhookRuntime(csWebhookRuntime);
-      console.log(`CS MAT webhook receiver listening on private container port ${config.csWebhookPort}.`);
-      void sendCrewLogMessage(client, getBotText("cs.webhookListening", { port: config.csWebhookPort }, "logs"), "cs-detail");
+        const runtime = new CsWebhookRuntime({
+          secret: source === "test" ? config.csTestWebhookSecret! : config.matWebhookSecret,
+          port: source === "test" ? config.csTestWebhookPort : config.csWebhookPort,
+          path: source === "test" ? "/webhooks/cs-test" : undefined,
+          namespace: source === "test" ? "test" : undefined,
+          getMode: sourceMode,
+          store: source === "test" ? new CsEventStore("data/cs-test-webhook-events.json") : undefined,
+          intervalMs: config.csSyncIntervalMs,
+          mat,
+          registration: source === "test" ? {
+            getParticipants: () => manualOverrideStore.getCsParticipants(new Map()),
+            getCsParticipants: () => manualOverrideStore.getCsParticipants(new Map())
+          } : csRegistration,
+          dryRun: !live,
+          discordManager: sourceManager,
+          onTestEvent: eventType => {
+            console.log("CS webhook test event received", { eventType });
+            void logCs(getBotText("cs.webhookTestReceived", { eventType }, "logs"));
+          },
+          onEventReceived: event => {
+            console.log("CS webhook event queued", event);
+            void logCs(getBotText("cs.webhookReceived", {
+              eventType: event.eventType,
+              matchStatus: event.matchStatus,
+              sequence: event.sequence,
+              team1Players: event.team1Players,
+              team2Players: event.team2Players
+            }, "logs"));
+          },
+          onEventRejected: (eventType, reason) => {
+            void logCs(getBotText("cs.webhookRejected", { eventType, reason }, "logs"));
+          },
+          onEventIgnored: (eventType, reason) => {
+            console.warn("CS webhook event ignored", { eventType, reason });
+            void logCs(getBotText("cs.webhookIgnored", { eventType, reason }, "logs"));
+          },
+          onTerminalCleanup: (eventType, releasedAssignments) => {
+            const released = releasedAssignments === null
+              ? "match-slug tvetydig; ingen endret"
+              : String(releasedAssignments);
+            console.info("CS terminal webhook cleanup", { eventType, releasedAssignments });
+            void logCs(getBotText("cs.webhookTerminalCleanup", { eventType, released }, "logs"));
+          },
+          onProcessingFailed: (eventType, stage, reason) => {
+            void logCs(getBotText("cs.webhookProcessingFailed", {
+              eventType, stage, reason
+            }, "logs"));
+          },
+          report: summary => {
+            console.log("CS webhook plan", summary);
+            const noMoveReason = summary.dryRun
+              ? getBotText("cs.webhookPreviewNoMutation")
+              : summary.skippedTeams > 0
+                ? getBotText("cs.webhookTeamsSkippedReason")
+                : summary.plannedMembers > 0 && (summary.updatedRooms ?? 0) === 0
+                  ? getBotText("cs.webhookNoEligibleMove") : "";
+            void logCs(getBotText("cs.webhookSummary", {
+              tournament: getBotText(`makeTeamChats.competition.${summary.tournament}`),
+              eventType: summary.eventType,
+              source: summary.tournamentSource === "roster" ? "roster fallback" : "MAT API",
+              mode: summary.dryRun ? "forhåndsvisning" : "live",
+              planned: summary.plannedRooms,
+              members: summary.plannedMembers,
+              ensured: summary.roomsEnsured ?? 0,
+              moved: summary.updatedRooms ?? 0,
+              skipped: summary.skippedTeams,
+              unmatched: summary.unmatchedPlayers,
+              ambiguous: summary.ambiguousSteamIds,
+              noMoveReason
+            }, "logs"), "cs-summary");
+          }
+        });
+        if (source === "test") csTestWebhookRuntime = runtime;
+        else { csWebhookRuntime = runtime; setCsWebhookRuntime(runtime); }
+        receiversToStart.push({ source, runtime, port: source === "test" ? config.csTestWebhookPort : config.csWebhookPort, sourceLabel });
+      }
+      await csDiscordManager?.load();
+      await csTestDiscordManager?.load();
+      for (const receiver of receiversToStart.sort((left, right) => left.source === "test" ? -1 : right.source === "test" ? 1 : 0)) {
+        try {
+          await receiver.runtime.start();
+          void sendCrewLogMessage(client, `[${receiver.sourceLabel}] ${getBotText("cs.webhookListening", {
+            port: receiver.port
+          }, "logs")}`, "cs-detail");
+        } catch (error) {
+          if (receiver.source === "test") throw error;
+          csWebhookRuntime = undefined;
+          setCsWebhookRuntime(undefined);
+          csDiscordManager?.cancelPendingRoomDeletions();
+          console.error("MAT webhook could not start; test receiver remains available.",
+            error instanceof Error ? error.name : "UnknownError");
+          void sendCrewLogMessage(client, "[MAT] Mottakeren startet ikke; TESTSCRIPT fortsetter separat.", "cs-detail");
+        }
+      }
     } catch (error) {
+      running = false;
+      csDiscordManager?.cancelPendingRoomDeletions();
+      csTestDiscordManager?.cancelPendingRoomDeletions();
+      await csWebhookRuntime?.stop();
+      await csTestWebhookRuntime?.stop();
+      csTestWebhookRuntime = undefined;
+      csTestDiscordManager = undefined;
       csWebhookRuntime = undefined;
       setCsWebhookRuntime(undefined);
       csDiscordManager = undefined;
@@ -588,7 +674,8 @@ async function startCsVoiceSync(enabled = config.csVoiceSyncEnabled, live = !con
     throw new Error("CS MAT webhook trenger MAT_WEBHOOK_SECRET og Registration API.");
   }
 
-  if (enabled && !live && config.matUrl && config.matApiToken && registration && csRegistration) {
+  if (enabled && !live && getBotSettingsController()?.getCsSources().mat !== "off"
+    && config.matUrl && config.matApiToken && registration && csRegistration) {
     try {
       const mat = new MatClient({ baseUrl: config.matUrl, apiToken: config.matApiToken });
       csSyncRuntime = new CsSyncRuntime(

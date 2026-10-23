@@ -382,7 +382,7 @@
     "meal.rolesSummary": "Måltidsroller synkronisert: {pulje1} i Pulje 1, {pulje2} i Pulje 2, {added} lagt til, {removed} fjernet, {missing} uten måltidsdata.",
     "cs.webhookSummary": "CS webhook ({source}, {mode}) {tournament} {eventType}: plan {planned} rom/{members} spillere, klargjort {ensured} rom, flyttet {moved}, utelatt {skipped} lag, uten Steam-kobling {unmatched}, tvetydige {ambiguous}. {noMoveReason}",
     "cs.webhookTestReceived": "CS webhook TEST mottatt: {eventType}; signaturen er godkjent, eventet er kun kvittert og utløser ingen kamp- eller Discord-handlinger.",
-    "cs.webhookReceived": "CS webhook EKT mottatt: {eventType}, status {matchStatus}, sekvens {sequence}, roster {team1Players}v{team2Players}; signaturen er godkjent og eventet er lagt i kø.",
+    "cs.webhookReceived": "CS kamp-event mottatt (test:false): {eventType}, status {matchStatus}, sekvens {sequence}, roster {team1Players}v{team2Players}; signatur godkjent. Kildens modus avgjør videre behandling.",
     "cs.webhookRejected": "CS webhook ikke behandlet: {eventType}; {reason}.",
     "cs.webhookIgnored": "CS webhook ignorert: {eventType}; {reason}.",
     "cs.webhookTerminalCleanup": "CS webhook {eventType}: frigjorde {released} oppdrag; tomme bot-rom planlegges ryddet.",

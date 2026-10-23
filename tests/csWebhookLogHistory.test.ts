@@ -19,6 +19,8 @@ test("webhook log lookup returns bot CS summaries and signed test-event logs", a
     logEntry(`page-one-${index}`, "other-user", "ordinary crew message"));
   firstPage[0] = logEntry("not-bot-webhook", "other-user", "CS webhook Main match.ready: ignored");
   const secondPage = [
+    logEntry("test-source", "bot", "[TESTSCRIPT] CS kamp-event mottatt (test:false): match.live"),
+    logEntry("mat-source", "bot", "[MAT] CS webhook main match.live: plan 2 rooms"),
     logEntry("move", "bot", "CS webhook action: Flyttet en tildelt spiller til CS ONE."),
     logEntry("test", "bot", "CS webhook test: signert MAT-testevent mottatt (match.ready); ingen kamp ble behandlet."),
     logEntry("newest", "bot", "CS webhook Wingman match.finished: 0 rooms in plan"),
@@ -31,7 +33,7 @@ test("webhook log lookup returns bot CS summaries and signed test-event logs", a
   }, "bot", 8, 200);
 
   assert.deepEqual(requestedCursors, [undefined, "page-one-99"]);
-  assert.deepEqual(entries.map(message => message.id), ["oldest", "newest", "test", "move"]);
+  assert.deepEqual(entries.map(message => message.id), ["oldest", "newest", "test", "move", "mat-source", "test-source"]);
 });
 
 test("webhook log lookup stops at the configured scan limit", async () => {

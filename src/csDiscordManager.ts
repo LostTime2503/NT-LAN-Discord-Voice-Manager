@@ -103,10 +103,13 @@ export class CsDiscordManager {
     private readonly deleteDelayMs: number,
     private readonly filePath = "data/cs-owned-voice-channels.json",
     private readonly globallyDryRun = true,
-    private readonly reportActivity?: (activity: CsDiscordActivity) => void
+    private readonly reportActivity?: (activity: CsDiscordActivity) => void,
+    private readonly canMutate: () => boolean = () => true,
+    private readonly hasOtherSourceAssignment: (memberId: string) => boolean = () => false
   ) {}
 
   async load(): Promise<void> {
+    if (this.loaded) return;
     try {
       const payload: unknown = JSON.parse(await readFile(this.filePath, "utf8"));
       if (!isRecord(payload) || (payload.version !== 1 && payload.version !== 2) || !Array.isArray(payload.rooms)
@@ -135,7 +138,7 @@ export class CsDiscordManager {
     dryRun: boolean
   ): Promise<CsDiscordSyncSummary> {
     this.assertLoaded();
-    const effectiveDryRun = dryRun || this.globallyDryRun;
+    const effectiveDryRun = dryRun || this.globallyDryRun || !this.canMutate();
     if (!isCsRoomAssignmentEvent(event.type)) {
       if (["match.finished", "match.cancelled", "match.reset"].includes(event.type)) {
         let assignmentsChanged = false;
@@ -352,7 +355,7 @@ export class CsDiscordManager {
 
   async handleVoiceStateUpdate(state: VoiceState, previousChannelId?: string): Promise<boolean> {
     this.assertLoaded();
-    if (this.globallyDryRun || !state.id || state.member?.user.bot) return false;
+    if (this.globallyDryRun || !this.canMutate() || !state.id || state.member?.user.bot) return false;
     if (previousChannelId && previousChannelId !== state.channelId
       && [...this.rooms.values()].some(room => room.channelId === previousChannelId)) {
       await this.scheduleRoomDeletion(previousChannelId);
@@ -405,7 +408,13 @@ export class CsDiscordManager {
     moveMember: (channelId: string) => Promise<boolean>,
     diagnosticScope?: CsVoiceRoomScope
   ): Promise<boolean> {
-    if (this.globallyDryRun) return false;
+    if (this.globallyDryRun || !this.canMutate()) return false;
+    if (this.hasOtherSourceAssignment(memberId)) {
+      if (diagnosticScope) this.reportActivitySafely({
+        type: "route-skipped", scope: diagnosticScope, reason: "ambiguous-assignment"
+      });
+      return false;
+    }
     const candidates = new Map<string, CsVoiceRoomRequest>();
     for (const [key, assignment] of this.assignments) {
       if (assignment.memberIds.includes(memberId)) candidates.set(key, assignment);
@@ -478,6 +487,16 @@ export class CsDiscordManager {
     await this.writeQueue;
     this.assertLoaded();
     return [...this.assignments.values()].map(request => ({ ...request, memberIds: [...request.memberIds] }));
+  }
+
+  hasAssignedMember(memberId: string): boolean {
+    return this.canMutate() && [...this.assignments.values()].some(request => request.memberIds.includes(memberId));
+  }
+
+  async clearAssignments(): Promise<void> {
+    this.assertLoaded();
+    this.assignments.clear();
+    await this.persist();
   }
 
   async reconcileParticipantRoles(

@@ -16,6 +16,8 @@ test("bot feature settings persist across store instances and preserve other tog
     assert.deepEqual(await first.load(), { access: true, normalVoice: true, csRoles: false, csVoice: false });
     assert.deepEqual(first.getLive(), { access: true, csRoles: false, csVoice: false });
     assert.equal(first.getCrewLogMode(), "full");
+    assert.deepEqual(first.getCsSources(), { mat: "live", test: "off" });
+    await first.setCsSource("test", "preview");
     await first.set("csRoles", true);
     assert.deepEqual(first.getLive(), { access: true, csRoles: false, csVoice: false });
     await first.setLive("csRoles", true);
@@ -24,6 +26,7 @@ test("bot feature settings persist across store instances and preserve other tog
     assert.deepEqual(await restarted.load(), { access: true, normalVoice: true, csRoles: true, csVoice: false });
     assert.deepEqual(restarted.getLive(), { access: true, csRoles: true, csVoice: false });
     assert.equal(restarted.getCrewLogMode(), "cs-test");
+    assert.deepEqual(restarted.getCsSources(), { mat: "live", test: "preview" });
     const persisted = JSON.parse(await readFile(path, "utf8")) as { version: number; crewLogMode: string };
     assert.equal(persisted.version, 1);
     assert.equal(persisted.crewLogMode, "cs-test");
@@ -135,4 +138,31 @@ test("Crew log levels filter general, website, and CS detail categories", () => 
   assert.equal(shouldDeliverCrewLog("full", "cs-detail"), false);
   assert.equal(shouldDeliverCrewLog("detailed-cs", "general"), true);
   assert.equal(shouldDeliverCrewLog("detailed-cs", "cs-detail"), true);
+});
+
+test("CS source controls require live confirmation and roll back failed transitions", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "cs-source-settings-"));
+  const store = new BotSettingsStore(join(directory, "settings.json"),
+    { access: false, normalVoice: false, csRoles: false, csVoice: true },
+    { access: false, csRoles: false, csVoice: true });
+  let rejectNext = false;
+  const controller = new BotSettingsController(store, async () => {
+    if (rejectNext) { rejectNext = false; throw new Error("synthetic start failure"); }
+  });
+  try {
+    await controller.load();
+    await assert.rejects(controller.setCsSource("test", "live"), /confirmation required/);
+    assert.equal(controller.getCsSources().test, "off");
+    await controller.setCsSource("mat", "off");
+    await controller.setCsSource("test", "live", true);
+    assert.deepEqual(controller.getCsSources(), { mat: "off", test: "live" });
+    rejectNext = true;
+    await assert.rejects(controller.setCsSource("test", "preview"), /synthetic start failure/);
+    assert.deepEqual(controller.getCsSources(), { mat: "off", test: "live" });
+    const restarted = new BotSettingsStore(join(directory, "settings.json"));
+    await restarted.load();
+    assert.deepEqual(restarted.getCsSources(), { mat: "off", test: "live" });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });

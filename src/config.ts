@@ -54,6 +54,8 @@ export const config = {
   csSyncIntervalMs: readOptionalPositiveInteger("CS_SYNC_INTERVAL_MS", 300_000),
   csEmptyChannelDeleteDelayMs: readOptionalPositiveInteger("CS_EMPTY_CHANNEL_DELETE_DELAY_MS", 30_000),
   csWebhookPort: readOptionalPositiveInteger("CS_WEBHOOK_PORT", 8787),
+  csTestWebhookPort: readOptionalPositiveInteger("CS_TEST_WEBHOOK_PORT", 8788),
+  csTestWebhookSecret: process.env.CS_TEST_WEBHOOK_SECRET,
   matWebhookSecret: process.env.MAT_WEBHOOK_SECRET,
   crewLogChannelId: process.env.CREW_LOG_CHANNEL_ID,
   emptyChannelDeleteDelayMs: readOptionalPositiveInteger("EMPTY_CHANNEL_DELETE_DELAY_MS", 300_000),

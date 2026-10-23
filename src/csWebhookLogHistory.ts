@@ -32,7 +32,7 @@ export async function fetchRecentCsWebhookLogs<T extends CsWebhookLogEntry>(
     if (!page.size) break;
 
     for (const message of page.values()) {
-      if (message.author.id === botUserId && message.content.startsWith("CS webhook ")) {
+      if (message.author.id === botUserId && /^(?:\[(?:MAT|TESTSCRIPT)\] )?CS (?:webhook |kamp-event )/.test(message.content)) {
         matches.push(message);
         if (matches.length === limit) break;
       }
